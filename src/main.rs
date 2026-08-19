@@ -252,16 +252,11 @@ fn run_period(repo: &str, begin: NaiveDate, end: NaiveDate, today: NaiveDate) ->
 
     let open = gh::total_count(&opened_q)?;
     let closed = gh::total_count(&closed_q)?;
-    let total = open + closed;
-    let duration = (end - begin).num_days();
-    let url = format!("{begin}..{end}");
-    let rate = if total > 0 {
-        format!("{:.4}", closed as f64 / total as f64)
-    } else {
-        "nvt".to_string()
-    };
+    let link_target =
+        format!("https://github.com/{repo}/issues?q=is%3Aissue%20created%3A{begin}..{end}");
+    let url = format!("[{begin}..{end}]({link_target})");
 
-    println!("{begin}\t{end}\t{open}\t{closed}\t{total}\t{today}\t{duration}\t{url}\t{rate}");
+    println!("{url}\t{today}\t{begin}\t{end}\t{open}\t{closed}");
 
     Ok(())
 }

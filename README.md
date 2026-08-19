@@ -48,17 +48,18 @@ acsissues monthly
 acsissues yearly
 ```
 
-Each prints one TSV row for the most recently *completed* period, matching
-the sheet's columns exactly:
+Each prints one TSV row for the most recently *completed* period, covering
+the sheet's input columns:
 
 ```
-begin    end    open    closed    total    date    duration    url    rate
+url    observed    begin    end    open    closed
 ```
 
-e.g. `2026-08-12    2026-08-18    28    25    53    2026-08-19    6    2026-08-12..2026-08-18    0.4717`
-(`total`, `duration`, `url`, `rate` are computed here rather than left as
-sheet formulas, so the row pastes correctly even into a cell range with no
-prior formula).
+e.g.
+`[2026-08-12..2026-08-18](https://github.com/apache/cloudstack/issues?q=is%3Aissue%20created%3A2026-08-12..2026-08-18)    2026-08-19    2026-08-12    2026-08-18    28    25`.
+The remaining columns (`total`, `duration`, `rate`) are sheet formulas —
+paste this row into H/F/A/B/C/D and drag the existing formulas down from the
+row above.
 
 Period boundaries:
 - **weekly**: the most recently completed Wednesday→Tuesday window (matches

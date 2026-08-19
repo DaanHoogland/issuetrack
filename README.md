@@ -64,12 +64,23 @@ row above.
 Period boundaries:
 - **weekly**: the most recently completed Wednesday→Tuesday window (matches
   the existing sheet's cadence).
-- **monthly**: the most recently completed calendar month.
-- **yearly**: the most recently completed calendar year — this one is an
-  assumption; say so if you actually want a running year-to-date row instead.
+- **monthly**: the current calendar month by default.
+  - `-N` = N months back (e.g. `acsissues monthly -3`).
+  - a bare positive number = an absolute year, keeping the current month
+    (2-digit -> 20XX, 4-digit as-is), e.g. `acsissues monthly 2021` or
+    `acsissues monthly 23`.
+  - a month name/abbreviation alone = that month in the current year
+    (`acsissues monthly aug` / `acsissues monthly august`).
+  - a month name plus a year, in either order = that month in that year
+    (`acsissues monthly aug 2021` or `acsissues monthly 2021 aug`).
+- **yearly**: the current calendar year by default. Add `-N` to go back N
+  years instead (e.g. `acsissues yearly -2` = 2 years ago), or give an
+  absolute year directly, 2-digit or 4-digit (`acsissues yearly 23` or
+  `acsissues yearly 2023`).
 
 Use `--since YYYY-MM-DD --until YYYY-MM-DD` together to override the
-computed begin/end (e.g. for backfilling a specific range).
+computed begin/end directly (e.g. for backfilling an arbitrary range) —
+takes precedence over `-N`.
 
 ## Notes
 

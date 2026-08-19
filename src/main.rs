@@ -62,15 +62,29 @@ enum Command {
         #[command(flatten)]
         over: PeriodOverride,
     },
-    /// Same shape as `weekly`, covering the most recently completed calendar month.
+    /// Same shape as `weekly`, covering the current calendar month by default.
+    #[command(allow_negative_numbers = true)]
     Monthly {
         #[command(flatten)]
         over: PeriodOverride,
+        /// Months back (e.g. -3 = 3 months ago), or a month name/abbreviation
+        /// (e.g. Aug, August), optionally paired with a year (in either order).
+        #[arg(allow_hyphen_values = true)]
+        first: Option<String>,
+        /// A year (2-digit or 4-digit) to go with a month name in `first`.
+        /// May be given before or after the month name.
+        #[arg(allow_hyphen_values = true)]
+        second: Option<String>,
     },
-    /// Same shape as `weekly`, covering the most recently completed calendar year.
+    /// Same shape as `weekly`, covering the current calendar year by default.
+    #[command(allow_negative_numbers = true)]
     Yearly {
         #[command(flatten)]
         over: PeriodOverride,
+        /// 0 = current year; negative = N years back (e.g. -3 = 3 years ago);
+        /// positive = an absolute year, 2-digit (23 -> 2023) or 4-digit (2023).
+        #[arg(allow_hyphen_values = true, default_value_t = 0)]
+        n: i64,
     },
     /// Write a starter config.toml if one doesn't already exist.
     InitConfig,
@@ -95,15 +109,17 @@ fn main() -> Result<()> {
             no_state,
         } => run_individual(&cli.repo, &config_path, &state_path, since, until, no_state, today),
         Command::Weekly { over } => {
-            let (begin, end) = resolve_period(over, today, last_completed_week)?;
+            let (begin, end) = resolve_period(over, today, |t| Ok(last_completed_week(t)))?;
             run_period(&cli.repo, begin, end, today)
         }
-        Command::Monthly { over } => {
-            let (begin, end) = resolve_period(over, today, last_completed_month)?;
+        Command::Monthly { over, first, second } => {
+            let (begin, end) = resolve_period(over, today, move |t| {
+                resolve_month(t, first.clone(), second.clone())
+            })?;
             run_period(&cli.repo, begin, end, today)
         }
-        Command::Yearly { over } => {
-            let (begin, end) = resolve_period(over, today, last_completed_year)?;
+        Command::Yearly { over, n } => {
+            let (begin, end) = resolve_period(over, today, move |t| Ok(resolve_year(t, n)))?;
             run_period(&cli.repo, begin, end, today)
         }
     }
@@ -112,11 +128,11 @@ fn main() -> Result<()> {
 fn resolve_period(
     over: PeriodOverride,
     today: NaiveDate,
-    default_fn: impl Fn(NaiveDate) -> (NaiveDate, NaiveDate),
+    default_fn: impl Fn(NaiveDate) -> Result<(NaiveDate, NaiveDate)>,
 ) -> Result<(NaiveDate, NaiveDate)> {
     match (over.since, over.until) {
         (Some(s), Some(u)) => Ok((parse_date(&s)?, parse_date(&u)?)),
-        _ => Ok(default_fn(today)),
+        _ => default_fn(today),
     }
 }
 
@@ -138,21 +154,107 @@ fn last_day_of_month(year: i32, month: u32) -> NaiveDate {
         - Duration::days(1)
 }
 
-/// Most recently completed calendar month before `today`'s month.
-fn last_completed_month(today: NaiveDate) -> (NaiveDate, NaiveDate) {
-    let (year, month) = if today.month() == 1 {
-        (today.year() - 1, 12)
-    } else {
-        (today.year(), today.month() - 1)
-    };
+/// Calendar month `ago` months before `today`'s month (0 = current month).
+fn month_with_offset(today: NaiveDate, ago: u32) -> (NaiveDate, NaiveDate) {
+    let total_months = today.year() as i64 * 12 + (today.month() as i64 - 1) - ago as i64;
+    let year = total_months.div_euclid(12) as i32;
+    let month = (total_months.rem_euclid(12) + 1) as u32;
     let begin = NaiveDate::from_ymd_opt(year, month, 1).expect("valid first-of-month date");
     let end = last_day_of_month(year, month);
     (begin, end)
 }
 
-/// Most recently completed calendar year before `today`'s year.
-fn last_completed_year(today: NaiveDate) -> (NaiveDate, NaiveDate) {
-    let year = today.year() - 1;
+/// Resolves the `monthly` command's positional parameters, in either order:
+/// - both absent: current month.
+/// - one number only: that many months back (existing behavior).
+/// - one month name/abbreviation only: that month in the current year.
+/// - a month name and a year (2-digit -> 20XX, 4-digit as-is), in either order.
+/// - one bare number only: negative = that many months back; positive = an
+///   absolute year (2-digit -> 20XX, 4-digit as-is), keeping the current month.
+fn resolve_month(
+    today: NaiveDate,
+    first: Option<String>,
+    second: Option<String>,
+) -> Result<(NaiveDate, NaiveDate)> {
+    match (first, second) {
+        (None, None) => Ok(month_with_offset(today, 0)),
+        (Some(a), None) => {
+            if let Ok(n) = a.parse::<i64>() {
+                if n < 0 {
+                    Ok(month_with_offset(today, n.unsigned_abs() as u32))
+                } else if n == 0 {
+                    Ok(month_with_offset(today, 0))
+                } else {
+                    let y = if n < 100 { 2000 + n as i32 } else { n as i32 };
+                    month_in_year(y, today.month())
+                }
+            } else {
+                let month_num = parse_month_name(&a)?;
+                month_in_year(today.year(), month_num)
+            }
+        }
+        (Some(a), Some(b)) => {
+            let (month_str, year_str) = if parse_month_name(&a).is_ok() {
+                (a, b)
+            } else if parse_month_name(&b).is_ok() {
+                (b, a)
+            } else {
+                anyhow::bail!(
+                    "give a month name/abbreviation and a year, e.g. `monthly aug 2021` \
+                     or `monthly 2021 aug`"
+                );
+            };
+            let month_num = parse_month_name(&month_str)?;
+            let year_num: i64 = year_str
+                .parse()
+                .with_context(|| format!("'{year_str}' is not a valid year"))?;
+            let y = if year_num < 100 { 2000 + year_num as i32 } else { year_num as i32 };
+            month_in_year(y, month_num)
+        }
+        (None, Some(_)) => anyhow::bail!("give a month and/or year"),
+    }
+}
+
+fn month_in_year(year: i32, month_num: u32) -> Result<(NaiveDate, NaiveDate)> {
+    let begin = NaiveDate::from_ymd_opt(year, month_num, 1)
+        .with_context(|| format!("invalid year {year}"))?;
+    let end = last_day_of_month(year, month_num);
+    Ok((begin, end))
+}
+
+fn parse_month_name(s: &str) -> Result<u32> {
+    let month = match s.trim().to_lowercase().as_str() {
+        "jan" | "january" => 1,
+        "feb" | "february" => 2,
+        "mar" | "march" => 3,
+        "apr" | "april" => 4,
+        "may" => 5,
+        "jun" | "june" => 6,
+        "jul" | "july" => 7,
+        "aug" | "august" => 8,
+        "sep" | "sept" | "september" => 9,
+        "oct" | "october" => 10,
+        "nov" | "november" => 11,
+        "dec" | "december" => 12,
+        _ => anyhow::bail!(
+            "'{s}' is not a recognized month name/abbreviation, nor a number of months back"
+        ),
+    };
+    Ok(month)
+}
+
+/// Resolves the `yearly` command's `n` parameter: 0 = current year, negative
+/// = N years back, positive = an absolute year (2-digit -> 20XX, 4-digit as-is).
+fn resolve_year(today: NaiveDate, n: i64) -> (NaiveDate, NaiveDate) {
+    let year = if n < 0 {
+        today.year() - (-n) as i32
+    } else if n == 0 {
+        today.year()
+    } else if n < 100 {
+        2000 + n as i32
+    } else {
+        n as i32
+    };
     let begin = NaiveDate::from_ymd_opt(year, 1, 1).expect("valid Jan 1 date");
     let end = NaiveDate::from_ymd_opt(year, 12, 31).expect("valid Dec 31 date");
     (begin, end)
@@ -246,11 +348,27 @@ fn run_individual(
     Ok(())
 }
 
-fn run_period(repo: &str, begin: NaiveDate, end: NaiveDate, today: NaiveDate) -> Result<()> {
-    let opened_q = format!("repo:{repo} is:issue created:{begin}..{end}");
-    let closed_q = format!("repo:{repo} is:issue closed:{begin}..{end}");
+/// Apache CloudStack's repo predates this; nothing legitimate resolves outside it.
+const MIN_SANE_YEAR: i32 = 2008;
 
-    let open = gh::total_count(&opened_q)?;
+fn run_period(repo: &str, begin: NaiveDate, end: NaiveDate, today: NaiveDate) -> Result<()> {
+    let max_year = today.year() + 1;
+    if begin.year() < MIN_SANE_YEAR || end.year() > max_year {
+        anyhow::bail!(
+            "computed period {begin}..{end} is out of range ({MIN_SANE_YEAR}-{max_year}) \
+             — a bare number is interpreted as \"N months/years back\", not an absolute year; \
+             for an absolute year use e.g. `yearly 2021` or `monthly aug 2021`"
+        );
+    }
+
+    // open/closed reflect the *current* status of issues created in this
+    // window (so open + closed always equals the window's total), not
+    // "closed during the window" — an issue created in this period may have
+    // been closed long after it ended.
+    let open_q = format!("repo:{repo} is:issue is:open created:{begin}..{end}");
+    let closed_q = format!("repo:{repo} is:issue is:closed created:{begin}..{end}");
+
+    let open = gh::total_count(&open_q)?;
     let closed = gh::total_count(&closed_q)?;
     let link_target =
         format!("https://github.com/{repo}/issues?q=is%3Aissue%20created%3A{begin}..{end}");

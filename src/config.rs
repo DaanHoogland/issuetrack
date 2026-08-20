@@ -8,6 +8,8 @@ pub struct Config {
     pub excluded_users: Vec<String>,
     #[serde(default)]
     pub extra_bots: Vec<String>,
+    #[serde(default)]
+    pub github_token: Option<String>,
 }
 
 impl Config {
@@ -48,6 +50,15 @@ pub fn default_path() -> PathBuf {
         .join(".config/acsissues/config.toml")
 }
 
+/// Reads just the `github_token` field from the config file, if the file
+/// exists and parses cleanly. Unlike `Config::load`, a missing or unreadable
+/// file is not an error — most commands don't require a config file at all.
+pub fn load_token(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let cfg: Config = toml::from_str(&text).ok()?;
+    cfg.github_token
+}
+
 pub const STARTER: &str = r#"# ShapeBlue GitHub usernames to exclude from the "external party" issue list.
 # Add one entry per known ShapeBlue employee GitHub account. Some employees use
 # a personal, apache.org, or noreply address instead of @shapeblue.com, so this
@@ -61,4 +72,9 @@ excluded_users = [
 extra_bots = [
   # "some-custom-bot",
 ]
+
+# Optional GitHub personal access token, used instead of `gh`'s own stored
+# login when talking to the GitHub API. Overridden by --token on the command
+# line. Leave unset to keep using `gh auth login`.
+# github_token = "ghp_..."
 "#;

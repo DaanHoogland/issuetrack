@@ -63,7 +63,10 @@ row above.
 
 Period boundaries:
 - **weekly**: the most recently completed Wednesday→Tuesday window (matches
-  the existing sheet's cadence).
+  the existing sheet's cadence). Give a date (`yyyy/mm/dd` or `yy/mm/dd`, e.g.
+  `acsissues weekly 2026/07/20` or `acsissues weekly 26/07/20`) to instead
+  print one row per completed week, from the week containing that date
+  through the most recently completed week — handy for backfilling a gap.
 - **monthly**: the current calendar month by default.
   - `-N` = N months back (e.g. `acsissues monthly -3`).
   - a bare positive number = an absolute year, keeping the current month
@@ -104,3 +107,6 @@ years back.
   Search results cap at 1000 per query — fine for weekly/monthly windows,
   should be checked if a yearly backfill query gets large.
 - Repo defaults to `apache/cloudstack`; override with `--repo owner/name`.
+- By default, GitHub requests use `gh`'s own stored login (`gh auth login`).
+  To use a personal access token instead, pass `--token <TOKEN>` or set
+  `github_token = "ghp_..."` in `config.toml` (the flag takes precedence).

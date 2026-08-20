@@ -25,6 +25,12 @@ struct Cli {
     #[arg(long, global = true)]
     state: Option<PathBuf>,
 
+    /// GitHub personal access token to use instead of `gh`'s own stored
+    /// login. Falls back to `github_token` in config.toml, then to `gh`'s
+    /// normal auth (GH_TOKEN/GITHUB_TOKEN env vars or `gh auth login`).
+    #[arg(long, global = true)]
+    token: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 
@@ -69,6 +75,11 @@ enum Command {
     Weekly {
         #[command(flatten)]
         over: PeriodOverride,
+        /// Print one row per completed week from the week containing this
+        /// date through the most recently completed week. Format: yyyy/mm/dd
+        /// or yy/mm/dd (2-digit year, this century).
+        #[arg(value_name = "DATE")]
+        since_date: Option<String>,
     },
     /// Same shape as `weekly`, covering the current calendar month by default.
     #[command(allow_negative_numbers = true)]
@@ -103,11 +114,30 @@ fn parse_date(s: &str) -> Result<NaiveDate> {
         .with_context(|| format!("invalid date '{s}', expected YYYY-MM-DD"))
 }
 
+/// Parses yyyy/mm/dd or yy/mm/dd (2-digit year -> 20XX, this century).
+fn parse_slash_date(s: &str) -> Result<NaiveDate> {
+    let bad = || anyhow::anyhow!("invalid date '{s}', expected yyyy/mm/dd or yy/mm/dd");
+    let parts: Vec<&str> = s.split('/').collect();
+    let [year_part, month_part, day_part] = parts[..] else {
+        return Err(bad());
+    };
+    let year_num: i32 = year_part.parse().map_err(|_| bad())?;
+    let year = match year_part.len() {
+        1 | 2 => 2000 + year_num,
+        4 => year_num,
+        _ => return Err(bad()),
+    };
+    let month: u32 = month_part.parse().map_err(|_| bad())?;
+    let day: u32 = day_part.parse().map_err(|_| bad())?;
+    NaiveDate::from_ymd_opt(year, month, day).ok_or_else(bad)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let config_path = cli.config.clone().unwrap_or_else(config::default_path);
     let state_path = cli.state.clone().unwrap_or_else(state::default_path);
     let today = Local::now().date_naive();
+    let token = cli.token.clone().or_else(|| config::load_token(&config_path));
 
     match cli.command {
         Some(Command::InitConfig) => init_config(&config_path),
@@ -115,24 +145,37 @@ fn main() -> Result<()> {
             since,
             until,
             no_state,
-        }) => run_individual(&cli.repo, &config_path, &state_path, since, until, no_state, today),
-        Some(Command::Weekly { over }) => {
+        }) => run_individual(
+            &cli.repo,
+            &config_path,
+            &state_path,
+            since,
+            until,
+            no_state,
+            today,
+            token.as_deref(),
+        ),
+        Some(Command::Weekly { over: _, since_date: Some(s) }) => {
+            let date = parse_slash_date(&s)?;
+            run_weekly_since(&cli.repo, date, today, token.as_deref())
+        }
+        Some(Command::Weekly { over, since_date: None }) => {
             let (begin, end) = resolve_period(over, today, |t| Ok(last_completed_week(t)))?;
-            run_period(&cli.repo, begin, end, today)
+            run_period(&cli.repo, begin, end, today, token.as_deref())
         }
         Some(Command::Monthly { over, first, second }) => {
             let (begin, end) = resolve_period(over, today, move |t| {
                 resolve_month(t, first.clone(), second.clone())
             })?;
-            run_period(&cli.repo, begin, end, today)
+            run_period(&cli.repo, begin, end, today, token.as_deref())
         }
         Some(Command::Yearly { over, n }) => {
             let (begin, end) = resolve_period(over, today, move |t| Ok(resolve_year(t, n)))?;
-            run_period(&cli.repo, begin, end, today)
+            run_period(&cli.repo, begin, end, today, token.as_deref())
         }
         None => {
             let (begin, end) = resolve_implicit(today, cli.first, cli.second)?;
-            run_period(&cli.repo, begin, end, today)
+            run_period(&cli.repo, begin, end, today, token.as_deref())
         }
     }
 }
@@ -157,6 +200,38 @@ fn last_completed_week(today: NaiveDate) -> (NaiveDate, NaiveDate) {
     let end = reference - Duration::days(offset);
     let begin = end - Duration::days(6);
     (begin, end)
+}
+
+/// The Wednesday-through-Tuesday week that contains `date`.
+fn week_containing(date: NaiveDate) -> (NaiveDate, NaiveDate) {
+    let wednesday = 2; // Weekday::num_days_from_monday(): Monday=0, ..., Wednesday=2
+    let offset = (date.weekday().num_days_from_monday() as i64 - wednesday).rem_euclid(7);
+    let begin = date - Duration::days(offset);
+    let end = begin + Duration::days(6);
+    (begin, end)
+}
+
+/// Prints one weekly row per completed Wednesday-through-Tuesday week, from
+/// the week containing `since_date` through the most recently completed week.
+fn run_weekly_since(
+    repo: &str,
+    since_date: NaiveDate,
+    today: NaiveDate,
+    token: Option<&str>,
+) -> Result<()> {
+    let (_, last_end) = last_completed_week(today);
+    let (mut begin, mut end) = week_containing(since_date);
+    let mut count = 0;
+    while end <= last_end {
+        run_period(repo, begin, end, today, token)?;
+        count += 1;
+        begin += Duration::days(7);
+        end += Duration::days(7);
+    }
+    if count == 0 {
+        eprintln!("no completed weeks between {since_date} and {today}");
+    }
+    Ok(())
 }
 
 fn last_day_of_month(year: i32, month: u32) -> NaiveDate {
@@ -332,6 +407,7 @@ fn run_individual(
     until: Option<String>,
     no_state: bool,
     today: NaiveDate,
+    token: Option<&str>,
 ) -> Result<()> {
     let cfg = config::Config::load(config_path)?;
     let st = if no_state {
@@ -352,7 +428,7 @@ fn run_individual(
     };
 
     let query = format!("repo:{repo} is:issue created:{since_date}..{until_date}");
-    let items = gh::all_items(&query)?;
+    let items = gh::all_items(&query, token)?;
 
     let mut rows: Vec<(NaiveDate, String)> = Vec::new();
     for item in &items {
@@ -397,7 +473,13 @@ fn run_individual(
 /// Apache CloudStack's repo predates this; nothing legitimate resolves outside it.
 const MIN_SANE_YEAR: i32 = 2008;
 
-fn run_period(repo: &str, begin: NaiveDate, end: NaiveDate, today: NaiveDate) -> Result<()> {
+fn run_period(
+    repo: &str,
+    begin: NaiveDate,
+    end: NaiveDate,
+    today: NaiveDate,
+    token: Option<&str>,
+) -> Result<()> {
     let max_year = today.year() + 1;
     if begin.year() < MIN_SANE_YEAR || end.year() > max_year {
         anyhow::bail!(
@@ -414,8 +496,8 @@ fn run_period(repo: &str, begin: NaiveDate, end: NaiveDate, today: NaiveDate) ->
     let open_q = format!("repo:{repo} is:issue is:open created:{begin}..{end}");
     let closed_q = format!("repo:{repo} is:issue is:closed created:{begin}..{end}");
 
-    let open = gh::total_count(&open_q)?;
-    let closed = gh::total_count(&closed_q)?;
+    let open = gh::total_count(&open_q, token)?;
+    let closed = gh::total_count(&closed_q, token)?;
     let link_target =
         format!("https://github.com/{repo}/issues?q=is%3Aissue%20created%3A{begin}..{end}");
     let url = format!("[{begin}..{end}]({link_target})");

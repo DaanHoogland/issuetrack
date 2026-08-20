@@ -7,20 +7,24 @@ pub struct SearchResult {
     pub items: Vec<Value>,
 }
 
-fn search_issues(query: &str, page: u32, per_page: u32) -> Result<SearchResult> {
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "GET",
-            "search/issues",
-            "-f",
-            &format!("q={query}"),
-            "-f",
-            &format!("per_page={per_page}"),
-            "-f",
-            &format!("page={page}"),
-        ])
+fn search_issues(query: &str, page: u32, per_page: u32, token: Option<&str>) -> Result<SearchResult> {
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "api",
+        "-X",
+        "GET",
+        "search/issues",
+        "-f",
+        &format!("q={query}"),
+        "-f",
+        &format!("per_page={per_page}"),
+        "-f",
+        &format!("page={page}"),
+    ]);
+    if let Some(t) = token {
+        cmd.env("GH_TOKEN", t);
+    }
+    let output = cmd
         .output()
         .context("failed to run `gh api` — is the gh CLI installed and on PATH?")?;
 
@@ -46,18 +50,18 @@ fn search_issues(query: &str, page: u32, per_page: u32) -> Result<SearchResult> 
 
 /// Total match count for a search query (GitHub search API caps this at 1000
 /// for actual item retrieval, but total_count itself is accurate).
-pub fn total_count(query: &str) -> Result<u64> {
-    Ok(search_issues(query, 1, 1)?.total_count)
+pub fn total_count(query: &str, token: Option<&str>) -> Result<u64> {
+    Ok(search_issues(query, 1, 1, token)?.total_count)
 }
 
 /// All matching items for a search query, paginated up to GitHub search's
 /// 1000-result cap (10 pages of 100).
-pub fn all_items(query: &str) -> Result<Vec<Value>> {
+pub fn all_items(query: &str, token: Option<&str>) -> Result<Vec<Value>> {
     let mut items = Vec::new();
     let per_page = 100;
     let mut page = 1;
     loop {
-        let res = search_issues(query, page, per_page)?;
+        let res = search_issues(query, page, per_page, token)?;
         let got = res.items.len() as u32;
         let total = res.total_count;
         items.extend(res.items);

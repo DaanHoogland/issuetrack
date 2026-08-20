@@ -16,7 +16,8 @@ Edit `~/.config/acsissues/config.toml` and add the GitHub usernames of
 ShapeBlue employees who are *not* using a `@shapeblue.com`-domain-detectable
 address (i.e. all of them — this list is by username, not email). Bot accounts
 ending in `[bot]` (dependabot, github-actions, ...) are excluded automatically;
-add any others to `extra_bots`.
+add any others to `extra_bots`. See [`config.toml.example`](config.toml.example)
+for the full set of fields.
 
 ## Usage
 
@@ -56,10 +57,14 @@ url    observed    begin    end    open    closed
 ```
 
 e.g.
-`[2026-08-12..2026-08-18](https://github.com/apache/cloudstack/issues?q=is%3Aissue%20created%3A2026-08-12..2026-08-18)    2026-08-19    2026-08-12    2026-08-18    28    25`.
+`https://github.com/apache/cloudstack/issues?q=is%3Aissue%20created%3A2026-08-12..2026-08-18    2026-08-19    2026-08-12    2026-08-18    28    25`.
 The remaining columns (`total`, `duration`, `rate`) are sheet formulas —
 paste this row into H/F/A/B/C/D and drag the existing formulas down from the
 row above.
+
+Add `--markdown-url` to format the url column as a markdown link instead
+(`[2026-08-12..2026-08-18](https://github.com/apache/cloudstack/issues?q=is%3Aissue%20created%3A2026-08-12..2026-08-18)`),
+or set `markdown_url = true` in `config.toml` to make that the default.
 
 Period boundaries:
 - **weekly**: the most recently completed Wednesday→Tuesday window (matches

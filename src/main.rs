@@ -32,6 +32,11 @@ struct Cli {
     #[arg(long, global = true)]
     token: Option<String>,
 
+    /// Format the weekly/monthly/yearly url column as a markdown link
+    /// (`[begin..end](url)`) instead of the plain url.
+    #[arg(long, global = true)]
+    markdown_url: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 
@@ -138,7 +143,9 @@ fn main() -> Result<()> {
     let config_path = cli.config.clone().unwrap_or_else(config::default_path);
     let state_path = cli.state.clone().unwrap_or_else(state::default_path);
     let today = Local::now().date_naive();
-    let token = cli.token.clone().or_else(|| config::load_token(&config_path));
+    let file_defaults = config::load_defaults(&config_path);
+    let token = cli.token.clone().or(file_defaults.github_token);
+    let markdown_url = cli.markdown_url || file_defaults.markdown_url;
 
     match cli.command {
         Some(Command::InitConfig) => init_config(&config_path),
@@ -158,25 +165,25 @@ fn main() -> Result<()> {
         ),
         Some(Command::Weekly { over: _, since_date: Some(s) }) => {
             let date = parse_slash_date(&s)?;
-            run_weekly_since(&cli.repo, date, today, token.as_deref())
+            run_weekly_since(&cli.repo, date, today, token.as_deref(), markdown_url)
         }
         Some(Command::Weekly { over, since_date: None }) => {
             let (begin, end) = resolve_period(over, today, |t| Ok(last_completed_week(t)))?;
-            run_period(&cli.repo, begin, end, today, token.as_deref())
+            run_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
         }
         Some(Command::Monthly { over, first, second }) => {
             let (begin, end) = resolve_period(over, today, move |t| {
                 resolve_month(t, first.clone(), second.clone())
             })?;
-            run_period(&cli.repo, begin, end, today, token.as_deref())
+            run_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
         }
         Some(Command::Yearly { over, n }) => {
             let (begin, end) = resolve_period(over, today, move |t| Ok(resolve_year(t, n)))?;
-            run_period(&cli.repo, begin, end, today, token.as_deref())
+            run_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
         }
         None => {
             let (begin, end) = resolve_implicit(today, cli.first, cli.second)?;
-            run_period(&cli.repo, begin, end, today, token.as_deref())
+            run_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
         }
     }
 }
@@ -223,6 +230,7 @@ fn run_weekly_since(
     since_date: NaiveDate,
     today: NaiveDate,
     token: Option<&str>,
+    markdown_url: bool,
 ) -> Result<()> {
     let (_, last_end) = last_completed_week(today);
     let (span_begin, _) = week_containing(since_date);
@@ -243,7 +251,7 @@ fn run_weekly_since(
     let (mut begin, mut end) = (span_begin, span_begin + Duration::days(6));
     while end <= last_end {
         let (open, closed) = counts_in_range(&items, begin, end);
-        print_period_row(repo, begin, end, today, open, closed);
+        print_period_row(repo, begin, end, today, open, closed, markdown_url);
         begin += Duration::days(7);
         end += Duration::days(7);
     }
@@ -520,6 +528,7 @@ fn run_period(
     end: NaiveDate,
     today: NaiveDate,
     token: Option<&str>,
+    markdown_url: bool,
 ) -> Result<()> {
     let max_year = today.year() + 1;
     if begin.year() < MIN_SANE_YEAR || end.year() > max_year {
@@ -539,15 +548,28 @@ fn run_period(
 
     let open = gh::total_count(&open_q, token)?;
     let closed = gh::total_count(&closed_q, token)?;
-    print_period_row(repo, begin, end, today, open, closed);
+    print_period_row(repo, begin, end, today, open, closed, markdown_url);
 
     Ok(())
 }
 
-fn print_period_row(repo: &str, begin: NaiveDate, end: NaiveDate, today: NaiveDate, open: u64, closed: u64) {
+#[allow(clippy::too_many_arguments)]
+fn print_period_row(
+    repo: &str,
+    begin: NaiveDate,
+    end: NaiveDate,
+    today: NaiveDate,
+    open: u64,
+    closed: u64,
+    markdown_url: bool,
+) {
     let link_target =
         format!("https://github.com/{repo}/issues?q=is%3Aissue%20created%3A{begin}..{end}");
-    let url = format!("[{begin}..{end}]({link_target})");
+    let url = if markdown_url {
+        format!("[{begin}..{end}]({link_target})")
+    } else {
+        link_target
+    };
 
     println!("{url}\t{today}\t{begin}\t{end}\t{open}\t{closed}");
 }

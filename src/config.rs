@@ -10,6 +10,8 @@ pub struct Config {
     pub extra_bots: Vec<String>,
     #[serde(default)]
     pub github_token: Option<String>,
+    #[serde(default)]
+    pub markdown_url: bool,
 }
 
 impl Config {
@@ -50,13 +52,15 @@ pub fn default_path() -> PathBuf {
         .join(".config/acsissues/config.toml")
 }
 
-/// Reads just the `github_token` field from the config file, if the file
-/// exists and parses cleanly. Unlike `Config::load`, a missing or unreadable
-/// file is not an error — most commands don't require a config file at all.
-pub fn load_token(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let cfg: Config = toml::from_str(&text).ok()?;
-    cfg.github_token
+/// Reads the config file for its optional defaults (`github_token`,
+/// `markdown_url`), falling back to `Config::default()` if the file is
+/// missing or unreadable. Unlike `Config::load`, that's not an error here —
+/// most commands don't require a config file at all.
+pub fn load_defaults(path: &Path) -> Config {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| toml::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
 pub const STARTER: &str = r#"# ShapeBlue GitHub usernames to exclude from the "external party" issue list.
@@ -77,4 +81,8 @@ extra_bots = [
 # login when talking to the GitHub API. Overridden by --token on the command
 # line. Leave unset to keep using `gh auth login`.
 # github_token = "ghp_..."
+
+# Format the weekly/monthly/yearly url column as a markdown link instead of
+# a plain url. Also settable per run with --markdown-url.
+# markdown_url = false
 "#;

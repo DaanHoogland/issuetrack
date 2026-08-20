@@ -1,0 +1,29 @@
+# Example config.toml for acsissues.
+#
+# Copy to ~/.config/acsissues/config.toml (or generate a starter with
+# `acsissues init-config`) and edit to fit. All fields are optional.
+
+# ShapeBlue GitHub usernames to exclude from the "external party" issue list.
+# Add one entry per known ShapeBlue employee GitHub account. Some employees use
+# a personal, apache.org, or noreply address instead of @shapeblue.com, so this
+# list is maintained by GitHub username, not by email domain.
+excluded_users = [
+  "DaanHoogland",
+  "someshapebluecolleague",
+]
+
+# Extra bot accounts to exclude, for bots whose username doesn't end in "[bot]"
+# (accounts ending in "[bot]" — e.g. dependabot[bot] — are excluded automatically).
+extra_bots = [
+  "some-custom-bot",
+]
+
+# Optional GitHub personal access token, used instead of `gh`'s own stored
+# login when talking to the GitHub API. Overridden by --token on the command
+# line. Leave unset to keep using `gh auth login`.
+# Treat this file as a secret once you fill this in - do not commit it.
+# github_token = "ghp_..."
+
+# Format the weekly/monthly/yearly url column as a markdown link instead of
+# a plain url. Also settable per run with --markdown-url.
+# markdown_url = false

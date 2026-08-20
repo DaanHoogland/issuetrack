@@ -5,6 +5,7 @@ mod state;
 use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use clap::{Parser, Subcommand};
+use serde_json::Value;
 use std::path::PathBuf;
 
 /// Refresh helper for the ACSissues Google Sheet: pulls data from GitHub and
@@ -213,6 +214,10 @@ fn week_containing(date: NaiveDate) -> (NaiveDate, NaiveDate) {
 
 /// Prints one weekly row per completed Wednesday-through-Tuesday week, from
 /// the week containing `since_date` through the most recently completed week.
+/// Prints one row per completed week, fetching every matching issue for the
+/// whole span in a single (paginated) search rather than two searches per
+/// week — the search API's own rate limit is easy to trip otherwise on a
+/// multi-week backfill.
 fn run_weekly_since(
     repo: &str,
     since_date: NaiveDate,
@@ -220,18 +225,54 @@ fn run_weekly_since(
     token: Option<&str>,
 ) -> Result<()> {
     let (_, last_end) = last_completed_week(today);
-    let (mut begin, mut end) = week_containing(since_date);
-    let mut count = 0;
+    let (span_begin, _) = week_containing(since_date);
+    if span_begin > last_end {
+        eprintln!("no completed weeks between {since_date} and {today}");
+        return Ok(());
+    }
+
+    let query = format!("repo:{repo} is:issue created:{span_begin}..{last_end}");
+    let items = gh::all_items(&query, token)?;
+    if items.len() >= 1000 {
+        eprintln!(
+            "warning: {span_begin}..{last_end} hit the search API's 1000-result cap — \
+             some weeks' counts may be undercounted; narrow the range if needed"
+        );
+    }
+
+    let (mut begin, mut end) = (span_begin, span_begin + Duration::days(6));
     while end <= last_end {
-        run_period(repo, begin, end, today, token)?;
-        count += 1;
+        let (open, closed) = counts_in_range(&items, begin, end);
+        print_period_row(repo, begin, end, today, open, closed);
         begin += Duration::days(7);
         end += Duration::days(7);
     }
-    if count == 0 {
-        eprintln!("no completed weeks between {since_date} and {today}");
-    }
     Ok(())
+}
+
+/// Counts, among already-fetched issue-search items, how many were created
+/// within `begin..end` and are currently open vs. closed.
+fn counts_in_range(items: &[Value], begin: NaiveDate, end: NaiveDate) -> (u64, u64) {
+    let (mut open, mut closed) = (0u64, 0u64);
+    for item in items {
+        let created_at = item
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let date_str = created_at.split('T').next().unwrap_or(created_at);
+        let Ok(created) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") else {
+            continue;
+        };
+        if created < begin || created > end {
+            continue;
+        }
+        match item.get("state").and_then(|v| v.as_str()) {
+            Some("open") => open += 1,
+            Some("closed") => closed += 1,
+            _ => {}
+        }
+    }
+    (open, closed)
 }
 
 fn last_day_of_month(year: i32, month: u32) -> NaiveDate {
@@ -498,11 +539,15 @@ fn run_period(
 
     let open = gh::total_count(&open_q, token)?;
     let closed = gh::total_count(&closed_q, token)?;
+    print_period_row(repo, begin, end, today, open, closed);
+
+    Ok(())
+}
+
+fn print_period_row(repo: &str, begin: NaiveDate, end: NaiveDate, today: NaiveDate, open: u64, closed: u64) {
     let link_target =
         format!("https://github.com/{repo}/issues?q=is%3Aissue%20created%3A{begin}..{end}");
     let url = format!("[{begin}..{end}]({link_target})");
 
     println!("{url}\t{today}\t{begin}\t{end}\t{open}\t{closed}");
-
-    Ok(())
 }

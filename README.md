@@ -106,6 +106,10 @@ years back.
 - Uses the GitHub search API (`is:issue`, so PRs are excluded automatically).
   Search results cap at 1000 per query — fine for weekly/monthly windows,
   should be checked if a yearly backfill query gets large.
+- `weekly <date>` backfills fetch the whole span in one paginated search and
+  bucket locally by week, instead of two searches per week — keeps a
+  multi-month backfill well under the search API's own 30-requests/minute
+  limit.
 - Repo defaults to `apache/cloudstack`; override with `--repo owner/name`.
 - By default, GitHub requests use `gh`'s own stored login (`gh auth login`).
   To use a personal access token instead, pass `--token <TOKEN>` or set

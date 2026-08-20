@@ -26,7 +26,15 @@ struct Cli {
     state: Option<PathBuf>,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+
+    /// Implicit shortcut when no subcommand is given: a month name/abbreviation
+    /// and/or a year resolve to `monthly`/`yearly` automatically (in either
+    /// order), e.g. `acsissues aug 2021` or `acsissues 2021`.
+    #[arg(allow_hyphen_values = true)]
+    first: Option<String>,
+    #[arg(allow_hyphen_values = true)]
+    second: Option<String>,
 }
 
 /// Manual override of a period's begin/end date, for backfilling.
@@ -102,24 +110,28 @@ fn main() -> Result<()> {
     let today = Local::now().date_naive();
 
     match cli.command {
-        Command::InitConfig => init_config(&config_path),
-        Command::Individual {
+        Some(Command::InitConfig) => init_config(&config_path),
+        Some(Command::Individual {
             since,
             until,
             no_state,
-        } => run_individual(&cli.repo, &config_path, &state_path, since, until, no_state, today),
-        Command::Weekly { over } => {
+        }) => run_individual(&cli.repo, &config_path, &state_path, since, until, no_state, today),
+        Some(Command::Weekly { over }) => {
             let (begin, end) = resolve_period(over, today, |t| Ok(last_completed_week(t)))?;
             run_period(&cli.repo, begin, end, today)
         }
-        Command::Monthly { over, first, second } => {
+        Some(Command::Monthly { over, first, second }) => {
             let (begin, end) = resolve_period(over, today, move |t| {
                 resolve_month(t, first.clone(), second.clone())
             })?;
             run_period(&cli.repo, begin, end, today)
         }
-        Command::Yearly { over, n } => {
+        Some(Command::Yearly { over, n }) => {
             let (begin, end) = resolve_period(over, today, move |t| Ok(resolve_year(t, n)))?;
+            run_period(&cli.repo, begin, end, today)
+        }
+        None => {
+            let (begin, end) = resolve_implicit(today, cli.first, cli.second)?;
             run_period(&cli.repo, begin, end, today)
         }
     }
@@ -213,6 +225,40 @@ fn resolve_month(
         }
         (None, Some(_)) => anyhow::bail!("give a month and/or year"),
     }
+}
+
+/// Resolves the top-level implicit shortcut (no subcommand given): a month
+/// name/abbreviation and/or a year, in either order, dispatch to the same
+/// logic as `monthly`/`yearly` respectively.
+fn resolve_implicit(
+    today: NaiveDate,
+    first: Option<String>,
+    second: Option<String>,
+) -> Result<(NaiveDate, NaiveDate)> {
+    if first.is_none() && second.is_none() {
+        anyhow::bail!(
+            "no command given — run with --help, or provide a month and/or year \
+             (e.g. `acsissues aug 2021` or `acsissues 2021`)"
+        );
+    }
+    let has_month = [first.as_deref(), second.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|s| parse_month_name(s).is_ok());
+    if has_month {
+        return resolve_month(today, first, second);
+    }
+    if second.is_some() {
+        anyhow::bail!(
+            "give a month name/abbreviation and a year, or use an explicit subcommand \
+             (monthly/yearly) for other combinations"
+        );
+    }
+    let s = first.expect("checked above");
+    let n: i64 = s
+        .parse()
+        .with_context(|| format!("'{s}' is not a recognized month name, year, or offset"))?;
+    Ok(resolve_year(today, n))
 }
 
 fn month_in_year(year: i32, month_num: u32) -> Result<(NaiveDate, NaiveDate)> {

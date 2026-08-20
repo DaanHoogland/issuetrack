@@ -82,6 +82,22 @@ Use `--since YYYY-MM-DD --until YYYY-MM-DD` together to override the
 computed begin/end directly (e.g. for backfilling an arbitrary range) —
 takes precedence over `-N`.
 
+**The `monthly`/`yearly` subcommand names are optional** whenever a month
+name and/or a year is given directly — it's inferred: a month name (with or
+without a year, either order) implies `monthly`; a bare year alone implies
+`yearly`.
+
+```
+acsissues aug          # same as: acsissues monthly aug
+acsissues aug 2021     # same as: acsissues monthly aug 2021
+acsissues 2021 aug     # same as: acsissues monthly 2021 aug
+acsissues 2021         # same as: acsissues yearly 2021
+```
+
+The `-N` back-offset forms and `--since`/`--until` overrides still need the
+explicit subcommand, since a bare `-3` alone is ambiguous between months and
+years back.
+
 ## Notes
 
 - Uses the GitHub search API (`is:issue`, so PRs are excluded automatically).

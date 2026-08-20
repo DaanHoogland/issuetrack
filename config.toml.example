@@ -1,7 +1,7 @@
-# Example config.toml for acsissues.
+# Example config.toml for issuetrack.
 #
-# Copy to ~/.config/acsissues/config.toml (or generate a starter with
-# `acsissues init-config`) and edit to fit. All fields are optional.
+# Copy to ~/.config/issuetrack/config.toml (or generate a starter with
+# `issuetrack init-config`) and edit to fit. All fields are optional.
 
 # ShapeBlue GitHub usernames to exclude from the "external party" issue list.
 # Add one entry per known ShapeBlue employee GitHub account. Some employees use

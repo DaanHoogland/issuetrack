@@ -10,7 +10,7 @@ pub struct Config {
     pub extra_bots: Vec<String>,
     #[serde(default)]
     pub github_token: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "markdown-url")]
     pub markdown_url: bool,
 }
 
@@ -18,7 +18,7 @@ impl Config {
     pub fn load(path: &Path) -> Result<Config> {
         if !path.exists() {
             anyhow::bail!(
-                "config file not found at {}\nrun `acsissues init-config` to create a starter one, then add ShapeBlue GitHub usernames to it",
+                "config file not found at {}\nrun `issuetrack init-config` to create a starter one, then add ShapeBlue GitHub usernames to it",
                 path.display()
             );
         }
@@ -49,7 +49,7 @@ impl Config {
 pub fn default_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config/acsissues/config.toml")
+        .join(".config/issuetrack/config.toml")
 }
 
 /// Reads the config file for its optional defaults (`github_token`,

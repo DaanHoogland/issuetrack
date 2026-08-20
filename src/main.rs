@@ -12,7 +12,7 @@ use std::path::PathBuf;
 /// prints TSV rows ready to paste into the sheet. Does not touch the sheet
 /// itself — no Google credentials involved.
 #[derive(Parser)]
-#[command(name = "acsissues", version, about)]
+#[command(name = "issuetrack", version, about)]
 struct Cli {
     /// GitHub repo to query
     #[arg(long, global = true, default_value = "apache/cloudstack")]
@@ -42,7 +42,7 @@ struct Cli {
 
     /// Implicit shortcut when no subcommand is given: a month name/abbreviation
     /// and/or a year resolve to `monthly`/`yearly` automatically (in either
-    /// order), e.g. `acsissues aug 2021` or `acsissues 2021`.
+    /// order), e.g. `issuetrack aug 2021` or `issuetrack 2021`.
     #[arg(allow_hyphen_values = true)]
     first: Option<String>,
     #[arg(allow_hyphen_values = true)]
@@ -362,7 +362,7 @@ fn resolve_implicit(
     if first.is_none() && second.is_none() {
         anyhow::bail!(
             "no command given — run with --help, or provide a month and/or year \
-             (e.g. `acsissues aug 2021` or `acsissues 2021`)"
+             (e.g. `issuetrack aug 2021` or `issuetrack 2021`)"
         );
     }
     let has_month = [first.as_deref(), second.as_deref()]

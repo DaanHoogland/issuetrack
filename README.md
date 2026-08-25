@@ -119,3 +119,80 @@ years back.
 - By default, GitHub requests use `gh`'s own stored login (`gh auth login`).
   To use a personal access token instead, pass `--token <TOKEN>` or set
   `github_token = "ghp_..."` in `config.toml` (the flag takes precedence).
+
+## Command reference
+
+Subcommand names can be abbreviated to any unambiguous prefix (`issuetrack
+ind`, `issuetrack week`, `issuetrack mo aug`, ...). Full `--help`/`-h` is
+available at every level (`issuetrack --help`, `issuetrack individual --help`, ...).
+
+### Global options
+
+Apply to every subcommand (and to the implicit month/year shortcut).
+
+| Option | Short | Description |
+|---|---|---|
+| `--repo <REPO>` | `-r` | GitHub repo to query (default: `apache/cloudstack`) |
+| `--config <PATH>` | `-c` | Path to `config.toml` (default: `~/.config/issuetrack/config.toml`) |
+| `--state <PATH>` | `-S` | Path to the state file (default: `~/.config/issuetrack/state.json`) |
+| `--token <TOKEN>` | `-t` | GitHub personal access token, instead of `gh`'s own stored login |
+| `--markdown-url` | `-m` | Format the weekly/monthly/yearly url column as `[begin..end](url)` |
+| `--help` | `-h` | Print help |
+| `--version` | `-V` | Print version |
+
+### `individual`
+
+TSV rows (url, title, user, opened date) of new external-party issues, for
+the ACSissues tab.
+
+| Option | Short | Description |
+|---|---|---|
+| `--since <YYYY-MM-DD>` | `-s` | Start date (default: last recorded state run, or 7 days ago) |
+| `--until <YYYY-MM-DD>` | `-u` | End date (default: today) |
+| `--no-state` | `-n` | Don't read or update the state file |
+
+### `weekly`
+
+One summary row per completed Wed→Tue week, for the Weekly tab.
+
+| Option | Short | Description |
+|---|---|---|
+| `--since <YYYY-MM-DD>` / `--until <YYYY-MM-DD>` | `-s` / `-u` | Manual override of the period (both required together) |
+| `[DATE]` positional (`yyyy/mm/dd` or `yy/mm/dd`) | | Print one row per completed week from the week containing `DATE` through the most recently completed week |
+
+Default (no args): the single most recently completed Wed→Tue window.
+
+### `monthly`
+
+Same row shape, for a calendar month.
+
+| Option | Short | Description |
+|---|---|---|
+| `--since` / `--until` | `-s` / `-u` | Manual override (same as `weekly`) |
+| `[FIRST]` | | Months back (negative number), or a month name/abbreviation, or a year |
+| `[SECOND]` | | A year, paired with a month name in `FIRST` (either order) |
+
+Examples: `monthly`, `monthly -3`, `monthly aug`, `monthly aug 2021`, `monthly 2021 aug`.
+
+### `yearly`
+
+Same row shape, for a calendar year.
+
+| Option | Short | Description |
+|---|---|---|
+| `--since` / `--until` | `-s` / `-u` | Manual override (same as `weekly`) |
+| `[N]` | | `0` = current year (default); negative = N years back; positive = absolute year (2- or 4-digit) |
+
+### `init-config`
+
+No options. Writes a starter `config.toml` if one doesn't already exist.
+
+### Implicit shortcut (no subcommand)
+
+`issuetrack [FIRST] [SECOND]` — same resolution rules as `monthly`'s two
+positionals, but dispatches to `monthly` or `yearly` depending on whether a
+month name is present:
+
+- `issuetrack aug 2021` → `monthly aug 2021`
+- `issuetrack 2021` → `yearly 2021`
+- `issuetrack` alone with no args is an error (must pass a subcommand, or a month/year)

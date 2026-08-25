@@ -12,29 +12,29 @@ use std::path::PathBuf;
 /// prints TSV rows ready to paste into the sheet. Does not touch the sheet
 /// itself — no Google credentials involved.
 #[derive(Parser)]
-#[command(name = "issuetrack", version, about)]
+#[command(name = "issuetrack", version, about, infer_subcommands = true)]
 struct Cli {
     /// GitHub repo to query
-    #[arg(long, global = true, default_value = "apache/cloudstack")]
+    #[arg(short = 'r', long, global = true, default_value = "apache/cloudstack")]
     repo: String,
 
     /// Path to config.toml (excluded ShapeBlue users / extra bots)
-    #[arg(long, global = true)]
+    #[arg(short = 'c', long, global = true)]
     config: Option<PathBuf>,
 
     /// Path to the state file tracking the last "individual" run date
-    #[arg(long, global = true)]
+    #[arg(short = 'S', long, global = true)]
     state: Option<PathBuf>,
 
     /// GitHub personal access token to use instead of `gh`'s own stored
     /// login. Falls back to `github_token` in config.toml, then to `gh`'s
     /// normal auth (GH_TOKEN/GITHUB_TOKEN env vars or `gh auth login`).
-    #[arg(long, global = true)]
+    #[arg(short = 't', long, global = true)]
     token: Option<String>,
 
     /// Format the weekly/monthly/yearly url column as a markdown link
     /// (`[begin..end](url)`) instead of the plain url.
-    #[arg(long, global = true)]
+    #[arg(short = 'm', long, global = true)]
     markdown_url: bool,
 
     #[command(subcommand)]
@@ -53,10 +53,10 @@ struct Cli {
 #[derive(clap::Args)]
 struct PeriodOverride {
     /// Override the period's begin date (YYYY-MM-DD). Requires --until too.
-    #[arg(long, requires = "until")]
+    #[arg(short = 's', long, requires = "until")]
     since: Option<String>,
     /// Override the period's end date (YYYY-MM-DD). Requires --since too.
-    #[arg(long, requires = "since")]
+    #[arg(short = 'u', long, requires = "since")]
     until: Option<String>,
 }
 
@@ -66,13 +66,13 @@ enum Command {
     /// for the ACSissues tab. Blank status/action columns are left for you to fill in.
     Individual {
         /// Start date (YYYY-MM-DD). Defaults to the last recorded run, or 7 days ago.
-        #[arg(long)]
+        #[arg(short = 's', long)]
         since: Option<String>,
         /// End date (YYYY-MM-DD). Defaults to today.
-        #[arg(long)]
+        #[arg(short = 'u', long)]
         until: Option<String>,
         /// Don't read or update the state file.
-        #[arg(long)]
+        #[arg(short = 'n', long)]
         no_state: bool,
     },
     /// One summary TSV row (begin, end, open, closed, total, date, duration,

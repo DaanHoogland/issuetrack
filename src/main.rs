@@ -187,17 +187,17 @@ fn main() -> Result<()> {
         }
         Some(Command::Weekly { over, since_date: None }) => {
             let (begin, end) = resolve_period(over, today, |t| Ok(last_completed_week(t)))?;
-            run_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
+            run_weekly_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
         }
         Some(Command::Monthly { over, first, second }) => {
             let (begin, end) = resolve_period(over, today, move |t| {
                 resolve_month(t, first.clone(), second.clone())
             })?;
-            run_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
+            run_monthly_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
         }
         Some(Command::Yearly { over, n }) => {
             let (begin, end) = resolve_period(over, today, move |t| Ok(resolve_year(t, n)))?;
-            run_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
+            run_yearly_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
         }
         None => {
             let (begin, end) = resolve_implicit(today, cli.first, cli.second)?;
@@ -239,10 +239,6 @@ fn week_containing(date: NaiveDate) -> (NaiveDate, NaiveDate) {
 
 /// Prints one weekly row per completed Wednesday-through-Tuesday week, from
 /// the week containing `since_date` through the most recently completed week.
-/// Prints one row per completed week, fetching every matching issue for the
-/// whole span in a single (paginated) search rather than two searches per
-/// week — the search API's own rate limit is easy to trip otherwise on a
-/// multi-week backfill.
 fn run_weekly_since(
     repo: &str,
     since_date: NaiveDate,
@@ -256,18 +252,56 @@ fn run_weekly_since(
         eprintln!("no completed weeks between {since_date} and {today}");
         return Ok(());
     }
+    weekly_rows(repo, span_begin, last_end, today, token, markdown_url)
+}
 
-    let query = format!("repo:{repo} is:issue created:{span_begin}..{last_end}");
+/// Prints one weekly row per Wednesday-through-Tuesday week overlapping
+/// `begin..end` — a single row when the period is exactly one week (the
+/// `weekly` command's default), several when `--since`/`--until` cover a
+/// wider range.
+fn run_weekly_period(
+    repo: &str,
+    begin: NaiveDate,
+    end: NaiveDate,
+    today: NaiveDate,
+    token: Option<&str>,
+    markdown_url: bool,
+) -> Result<()> {
+    let max_year = today.year() + 1;
+    if begin.year() < MIN_SANE_YEAR || end.year() > max_year {
+        anyhow::bail!(
+            "computed period {begin}..{end} is out of range ({MIN_SANE_YEAR}-{max_year})"
+        );
+    }
+    let (span_begin, _) = week_containing(begin);
+    let (_, span_end) = week_containing(end);
+    weekly_rows(repo, span_begin, span_end, today, token, markdown_url)
+}
+
+/// Prints one row per completed Wednesday-through-Tuesday week from
+/// `span_begin` through `span_end` (both assumed already week-aligned),
+/// fetching every matching issue for the whole span in a single (paginated)
+/// search rather than one search per week — the search API's own rate limit
+/// is easy to trip otherwise on a multi-week backfill.
+fn weekly_rows(
+    repo: &str,
+    span_begin: NaiveDate,
+    span_end: NaiveDate,
+    today: NaiveDate,
+    token: Option<&str>,
+    markdown_url: bool,
+) -> Result<()> {
+    let query = format!("repo:{repo} is:issue created:{span_begin}..{span_end}");
     let items = gh::all_items(&query, token)?;
     if items.len() >= 1000 {
         eprintln!(
-            "warning: {span_begin}..{last_end} hit the search API's 1000-result cap — \
+            "warning: {span_begin}..{span_end} hit the search API's 1000-result cap — \
              some weeks' counts may be undercounted; narrow the range if needed"
         );
     }
 
     let (mut begin, mut end) = (span_begin, span_begin + Duration::days(6));
-    while end <= last_end {
+    while end <= span_end {
         let (open, closed) = counts_in_range(&items, begin, end);
         print_period_row(repo, begin, end, today, open, closed, markdown_url);
         begin += Duration::days(7);
@@ -595,6 +629,108 @@ fn run_period(
     let closed = gh::total_count(&closed_q, token)?;
     print_period_row(repo, begin, end, today, open, closed, markdown_url);
 
+    Ok(())
+}
+
+/// The calendar month `date.year()`/`date.month()` falls in.
+fn month_containing(date: NaiveDate) -> (NaiveDate, NaiveDate) {
+    (
+        NaiveDate::from_ymd_opt(date.year(), date.month(), 1).expect("valid first-of-month date"),
+        last_day_of_month(date.year(), date.month()),
+    )
+}
+
+/// The calendar month following `year`/`month`.
+fn next_month(year: i32, month: u32) -> (i32, u32) {
+    if month == 12 { (year + 1, 1) } else { (year, month + 1) }
+}
+
+/// Prints one row per calendar month overlapping `begin..end` — a single row
+/// when the period is exactly one month (the `monthly` command's default),
+/// several when `--since`/`--until` cover a wider range.
+fn run_monthly_period(
+    repo: &str,
+    begin: NaiveDate,
+    end: NaiveDate,
+    today: NaiveDate,
+    token: Option<&str>,
+    markdown_url: bool,
+) -> Result<()> {
+    let max_year = today.year() + 1;
+    if begin.year() < MIN_SANE_YEAR || end.year() > max_year {
+        anyhow::bail!(
+            "computed period {begin}..{end} is out of range ({MIN_SANE_YEAR}-{max_year}) \
+             — a bare number is interpreted as \"N months/years back\", not an absolute year; \
+             for an absolute year use e.g. `yearly 2021` or `monthly aug 2021`"
+        );
+    }
+    let (span_begin, _) = month_containing(begin);
+    let (_, span_end) = month_containing(end);
+
+    let query = format!("repo:{repo} is:issue created:{span_begin}..{span_end}");
+    let items = gh::all_items(&query, token)?;
+    if items.len() >= 1000 {
+        eprintln!(
+            "warning: {span_begin}..{span_end} hit the search API's 1000-result cap — \
+             some months' counts may be undercounted; narrow the range if needed"
+        );
+    }
+
+    let (mut year, mut month) = (span_begin.year(), span_begin.month());
+    loop {
+        let (month_begin, month_end) = (
+            NaiveDate::from_ymd_opt(year, month, 1).expect("valid first-of-month date"),
+            last_day_of_month(year, month),
+        );
+        let (open, closed) = counts_in_range(&items, month_begin, month_end);
+        print_period_row(repo, month_begin, month_end, today, open, closed, markdown_url);
+        if month_end >= span_end {
+            break;
+        }
+        (year, month) = next_month(year, month);
+    }
+    Ok(())
+}
+
+/// Prints one row per calendar year overlapping `begin..end` — a single row
+/// when the period is exactly one year (the `yearly` command's default),
+/// several when `--since`/`--until` cover a wider range.
+fn run_yearly_period(
+    repo: &str,
+    begin: NaiveDate,
+    end: NaiveDate,
+    today: NaiveDate,
+    token: Option<&str>,
+    markdown_url: bool,
+) -> Result<()> {
+    let max_year = today.year() + 1;
+    if begin.year() < MIN_SANE_YEAR || end.year() > max_year {
+        anyhow::bail!(
+            "computed period {begin}..{end} is out of range ({MIN_SANE_YEAR}-{max_year}) \
+             — a bare number is interpreted as \"N months/years back\", not an absolute year; \
+             for an absolute year use e.g. `yearly 2021` or `monthly aug 2021`"
+        );
+    }
+    let span_begin_year = begin.year();
+    let span_end_year = end.year();
+    let span_begin = NaiveDate::from_ymd_opt(span_begin_year, 1, 1).expect("valid Jan 1 date");
+    let span_end = NaiveDate::from_ymd_opt(span_end_year, 12, 31).expect("valid Dec 31 date");
+
+    let query = format!("repo:{repo} is:issue created:{span_begin}..{span_end}");
+    let items = gh::all_items(&query, token)?;
+    if items.len() >= 1000 {
+        eprintln!(
+            "warning: {span_begin}..{span_end} hit the search API's 1000-result cap — \
+             some years' counts may be undercounted; narrow the range if needed"
+        );
+    }
+
+    for year in span_begin_year..=span_end_year {
+        let year_begin = NaiveDate::from_ymd_opt(year, 1, 1).expect("valid Jan 1 date");
+        let year_end = NaiveDate::from_ymd_opt(year, 12, 31).expect("valid Dec 31 date");
+        let (open, closed) = counts_in_range(&items, year_begin, year_end);
+        print_period_row(repo, year_begin, year_end, today, open, closed, markdown_url);
+    }
     Ok(())
 }
 

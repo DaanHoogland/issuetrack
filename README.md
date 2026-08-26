@@ -85,6 +85,10 @@ Period boundaries:
   `issuetrack weekly 2026/07/20` or `issuetrack weekly 26/07/20`) to instead
   print one row per completed week, from the week containing that date
   through the most recently completed week — handy for backfilling a gap.
+  Whenever the resolved period covers more than one week (this positional
+  form, or a `--since`/`--until` override spanning more than 7 days), one row
+  per Wednesday→Tuesday week is printed instead of a single aggregate row;
+  a period that resolves to exactly one week still prints a single row.
 - **monthly**: the current calendar month by default.
   - `-N` = N months back (e.g. `issuetrack monthly -3`).
   - a bare positive number = an absolute year, keeping the current month
@@ -101,7 +105,11 @@ Period boundaries:
 
 Use `--since YYYY-MM-DD --until YYYY-MM-DD` together to override the
 computed begin/end directly (e.g. for backfilling an arbitrary range) —
-takes precedence over `-N`.
+takes precedence over `-N`. As with `weekly`, when the overridden period
+covers more than one calendar month (`monthly`) or more than one calendar
+year (`yearly`), one row per month/year is printed instead of a single
+aggregate row; a period that resolves to exactly one month/year still
+prints a single row.
 
 **The `monthly`/`yearly` subcommand names are optional** whenever a month
 name and/or a year is given directly — it's inferred: a month name (with or
@@ -175,7 +183,9 @@ One summary row per completed Wed→Tue week, for the Weekly tab.
 | `--since <YYYY-MM-DD>` / `--until <YYYY-MM-DD>` | `-s` / `-u` | Manual override of the period (both required together) |
 | `[DATE]` positional (`yyyy/mm/dd` or `yy/mm/dd`) | | Print one row per completed week from the week containing `DATE` through the most recently completed week |
 
-Default (no args): the single most recently completed Wed→Tue window.
+Default (no args): the single most recently completed Wed→Tue window. Any
+resolved period longer than one week (via `[DATE]` or a wide `--since`/
+`--until` override) prints one row per week instead of a single row.
 
 ### `monthly`
 
@@ -189,6 +199,9 @@ Same row shape, for a calendar month.
 
 Examples: `monthly`, `monthly -3`, `monthly aug`, `monthly aug 2021`, `monthly 2021 aug`.
 
+A `--since`/`--until` override spanning more than one calendar month prints
+one row per month instead of a single row.
+
 ### `yearly`
 
 Same row shape, for a calendar year.
@@ -197,6 +210,9 @@ Same row shape, for a calendar year.
 |---|---|---|
 | `--since` / `--until` | `-s` / `-u` | Manual override (same as `weekly`) |
 | `[N]` | | `0` = current year (default); negative = N years back; positive = absolute year (2- or 4-digit) |
+
+A `--since`/`--until` override spanning more than one calendar year prints
+one row per year instead of a single row.
 
 ### `init-config`
 

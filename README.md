@@ -30,7 +30,7 @@ issuetrack individual
 Prints one TSV row per new issue opened by a non-ShapeBlue, non-bot author:
 
 ```
-url    title    author    opened-date    (blank status)    (blank action)
+url    title    author-profile-url    opened-date    (blank status)    (blank action)
 ```
 
 The status and action columns are left blank for you to fill in by hand, same
@@ -40,6 +40,11 @@ Defaults to picking up from the last run (tracked in
 `~/.config/issuetrack/state.json`) through today; first run defaults to the
 last 7 days. Override with `--since YYYY-MM-DD` / `--until YYYY-MM-DD`, and
 add `--no-state` to skip reading/writing the state file.
+
+`author-profile-url` is the reporter's GitHub profile url
+(`https://github.com/<login>`) by default, or `[<login>](https://github.com/<login>)`
+with `--markdown-url`. Add `--username` to print the bare login instead
+(takes precedence over `--markdown-url` for this column).
 
 ### Weekly / Monthly / Yearly tabs
 
@@ -136,20 +141,21 @@ Apply to every subcommand (and to the implicit month/year shortcut).
 | `--config <PATH>` | `-c` | Path to `config.toml` (default: `~/.config/issuetrack/config.toml`) |
 | `--state <PATH>` | `-S` | Path to the state file (default: `~/.config/issuetrack/state.json`) |
 | `--token <TOKEN>` | `-t` | GitHub personal access token, instead of `gh`'s own stored login |
-| `--markdown-url` | `-m` | Format the weekly/monthly/yearly url column as `[begin..end](url)` |
+| `--markdown-url` | `-m` | Format url columns as markdown links: the weekly/monthly/yearly period url as `[begin..end](url)`, and the `individual` reporter's profile url as `[login](url)` |
 | `--help` | `-h` | Print help |
 | `--version` | `-V` | Print version |
 
 ### `individual`
 
-TSV rows (url, title, user, opened date) of new external-party issues, for
-the ACSissues tab.
+TSV rows (url, title, user profile url, opened date) of new external-party
+issues, for the ACSissues tab.
 
 | Option | Short | Description |
 |---|---|---|
 | `--since <YYYY-MM-DD>` | `-s` | Start date (default: last recorded state run, or 7 days ago) |
 | `--until <YYYY-MM-DD>` | `-u` | End date (default: today) |
 | `--no-state` | `-n` | Don't read or update the state file |
+| `--username` | `-U` | Print the reporter as their bare GitHub username instead of a profile url (overrides `--markdown-url` for this column) |
 
 ### `weekly`
 

@@ -32,8 +32,9 @@ struct Cli {
     #[arg(short = 't', long, global = true)]
     token: Option<String>,
 
-    /// Format the weekly/monthly/yearly url column as a markdown link
-    /// (`[begin..end](url)`) instead of the plain url.
+    /// Format url columns as markdown links instead of plain urls: the
+    /// weekly/monthly/yearly period url (`[begin..end](url)`) and the
+    /// `individual` reporter's GitHub profile url (`[login](url)`).
     #[arg(short = 'm', long, global = true)]
     markdown_url: bool,
 
@@ -62,7 +63,7 @@ struct PeriodOverride {
 
 #[derive(Subcommand)]
 enum Command {
-    /// TSV rows (url, title, user, opened date) for new external-party issues,
+    /// TSV rows (url, title, user profile url, opened date) for new external-party issues,
     /// for the ACSissues tab. Blank status/action columns are left for you to fill in.
     Individual {
         /// Start date (YYYY-MM-DD). Defaults to the last recorded run, or 7 days ago.
@@ -74,6 +75,10 @@ enum Command {
         /// Don't read or update the state file.
         #[arg(short = 'n', long)]
         no_state: bool,
+        /// Print the reporter as their bare GitHub username instead of a
+        /// profile url (overrides --markdown-url for that column).
+        #[arg(short = 'U', long)]
+        username: bool,
     },
     /// One summary TSV row (begin, end, open, closed, total, date, duration,
     /// url, rate) for the Weekly tab, covering the most recently completed
@@ -153,6 +158,7 @@ fn main() -> Result<()> {
             since,
             until,
             no_state,
+            username,
         }) => run_individual(
             &cli.repo,
             &config_path,
@@ -162,6 +168,8 @@ fn main() -> Result<()> {
             no_state,
             today,
             token.as_deref(),
+            markdown_url,
+            username,
         ),
         Some(Command::Weekly { over: _, since_date: Some(s) }) => {
             let date = parse_slash_date(&s)?;
@@ -457,6 +465,8 @@ fn run_individual(
     no_state: bool,
     today: NaiveDate,
     token: Option<&str>,
+    markdown_url: bool,
+    username: bool,
 ) -> Result<()> {
     let cfg = config::Config::load(config_path)?;
     let st = if no_state {
@@ -497,7 +507,17 @@ fn run_individual(
             .unwrap_or("");
         let opened_date = created_at.split('T').next().unwrap_or(created_at);
         let opened = NaiveDate::parse_from_str(opened_date, "%Y-%m-%d").unwrap_or(today);
-        let row = format!("{url}\t{title}\t{login}\t{opened_date}\t\t");
+        let user = if username {
+            login.to_string()
+        } else {
+            let user_link = format!("https://github.com/{login}");
+            if markdown_url {
+                format!("[{login}]({user_link})")
+            } else {
+                user_link
+            }
+        };
+        let row = format!("{url}\t{title}\t{user}\t{opened_date}\t\t");
         rows.push((opened, row));
     }
     rows.sort_by(|a, b| b.0.cmp(&a.0));

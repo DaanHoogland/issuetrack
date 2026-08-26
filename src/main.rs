@@ -79,6 +79,14 @@ enum Command {
         /// profile url (overrides --markdown-url for that column).
         #[arg(short = 'U', long)]
         username: bool,
+        /// Look up each reporter's full GitHub display name and show it
+        /// (instead of their login) wherever the reporter column has a
+        /// separate display text: as the markdown link text with
+        /// --markdown-url, or as the displayed name with --username. Falls
+        /// back to the login for accounts with no display name set, and has
+        /// no effect on the plain profile-url output (neither flag given).
+        #[arg(short = 'F', long)]
+        full_username: bool,
     },
     /// One summary TSV row (begin, end, open, closed, total, date, duration,
     /// url, rate) for the Weekly tab, covering the most recently completed
@@ -159,6 +167,7 @@ fn main() -> Result<()> {
             until,
             no_state,
             username,
+            full_username,
         }) => run_individual(
             &cli.repo,
             &config_path,
@@ -170,6 +179,7 @@ fn main() -> Result<()> {
             token.as_deref(),
             markdown_url,
             username,
+            full_username,
         ),
         Some(Command::Weekly { over: _, since_date: Some(s) }) => {
             let date = parse_slash_date(&s)?;
@@ -467,6 +477,7 @@ fn run_individual(
     token: Option<&str>,
     markdown_url: bool,
     username: bool,
+    full_username: bool,
 ) -> Result<()> {
     let cfg = config::Config::load(config_path)?;
     let st = if no_state {
@@ -489,6 +500,7 @@ fn run_individual(
     let query = format!("repo:{repo} is:issue created:{since_date}..{until_date}");
     let items = gh::all_items(&query, token)?;
 
+    let mut full_names: std::collections::HashMap<String, Option<String>> = Default::default();
     let mut rows: Vec<(NaiveDate, String)> = Vec::new();
     for item in &items {
         let login = item
@@ -507,12 +519,25 @@ fn run_individual(
             .unwrap_or("");
         let opened_date = created_at.split('T').next().unwrap_or(created_at);
         let opened = NaiveDate::parse_from_str(opened_date, "%Y-%m-%d").unwrap_or(today);
-        let user = if username {
+
+        // The name shown in place of the login, wherever the reporter column
+        // has a display text separate from the raw url (markdown link text,
+        // or the bare --username text). One lookup per unique login per run.
+        let display_name = if full_username && (username || markdown_url) {
+            full_names
+                .entry(login.to_string())
+                .or_insert_with(|| gh::user_full_name(login, token).unwrap_or(None))
+                .clone()
+                .unwrap_or_else(|| login.to_string())
+        } else {
             login.to_string()
+        };
+        let user = if username {
+            display_name
         } else {
             let user_link = format!("https://github.com/{login}");
             if markdown_url {
-                format!("[{login}]({user_link})")
+                format!("[{display_name}]({user_link})")
             } else {
                 user_link
             }

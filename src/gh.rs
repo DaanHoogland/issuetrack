@@ -72,3 +72,31 @@ pub fn all_items(query: &str, token: Option<&str>) -> Result<Vec<Value>> {
     }
     Ok(items)
 }
+
+/// A GitHub account's public display name (the "Name" field on its profile),
+/// e.g. "Jane Doe" for login "janedoe". `None` if the account has no display
+/// name set (common for accounts that only ever set a username).
+pub fn user_full_name(login: &str, token: Option<&str>) -> Result<Option<String>> {
+    let mut cmd = Command::new("gh");
+    cmd.args(["api", &format!("users/{login}")]);
+    if let Some(t) = token {
+        cmd.env("GH_TOKEN", t);
+    }
+    let output = cmd
+        .output()
+        .context("failed to run `gh api` — is the gh CLI installed and on PATH?")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "gh api users/{login} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let v: Value =
+        serde_json::from_slice(&output.stdout).context("failed to parse gh api JSON output")?;
+    Ok(v.get("name")
+        .and_then(|n| n.as_str())
+        .filter(|n| !n.is_empty())
+        .map(str::to_string))
+}

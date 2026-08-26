@@ -46,6 +46,14 @@ add `--no-state` to skip reading/writing the state file.
 with `--markdown-url`. Add `--username` to print the bare login instead
 (takes precedence over `--markdown-url` for this column).
 
+Add `--full-username` to look up each reporter's public GitHub display name
+(one API call per unique login) and show it in place of the login wherever
+the reporter column has a separate display text — the markdown link text
+with `--markdown-url`, or the printed name with `--username`. Falls back to
+the login for accounts with no display name set, and has no effect if
+neither `--markdown-url` nor `--username` is given (the plain profile-url
+output has no separate text to replace).
+
 ### Weekly / Monthly / Yearly tabs
 
 ```
@@ -156,6 +164,7 @@ issues, for the ACSissues tab.
 | `--until <YYYY-MM-DD>` | `-u` | End date (default: today) |
 | `--no-state` | `-n` | Don't read or update the state file |
 | `--username` | `-U` | Print the reporter as their bare GitHub username instead of a profile url (overrides `--markdown-url` for this column) |
+| `--full-username` | `-F` | Look up each reporter's GitHub display name and use it in place of the login as the markdown link text (`--markdown-url`) or `--username` text; no effect otherwise |
 
 ### `weekly`
 

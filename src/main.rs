@@ -8,6 +8,42 @@ use clap::{Parser, Subcommand};
 use serde_json::Value;
 use std::path::PathBuf;
 
+/// How to render a url column: as a plain url, a markdown link, or a Google
+/// Sheets `=HYPERLINK()` formula. `--markdown-url` and `--hyperlink-url` are
+/// mutually exclusive; neither given means `Plain`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LinkStyle {
+    Plain,
+    Markdown,
+    Hyperlink(char),
+}
+
+impl LinkStyle {
+    /// Renders `url` alone (`Plain`), or `url` described by `text`
+    /// (`Markdown`/`Hyperlink`).
+    fn format(self, text: &str, url: &str) -> String {
+        match self {
+            LinkStyle::Plain => url.to_string(),
+            LinkStyle::Markdown => format!("[{text}]({url})"),
+            LinkStyle::Hyperlink(sep) => format!("=HYPERLINK(\"{url}\"{sep} \"{text}\")"),
+        }
+    }
+}
+
+/// Parses a `--hyperlink-separator` value: exactly one character, and not a
+/// double quote (which would break the formula's own quoting).
+fn parse_hyperlink_separator(s: &str) -> std::result::Result<char, String> {
+    let mut chars = s.chars();
+    let c = chars.next().ok_or("must be a single character, not empty")?;
+    if chars.next().is_some() {
+        return Err(format!("must be a single character, got '{s}'"));
+    }
+    if c == '"' {
+        return Err("cannot be a double quote — that would break the formula".to_string());
+    }
+    Ok(c)
+}
+
 /// Refresh helper for the ACSissues Google Sheet: pulls data from GitHub and
 /// prints TSV rows ready to paste into the sheet. Does not touch the sheet
 /// itself — no Google credentials involved.
@@ -35,8 +71,33 @@ struct Cli {
     /// Format url columns as markdown links instead of plain urls: the
     /// weekly/monthly/yearly period url (`[begin..end](url)`) and the
     /// `individual` reporter's GitHub profile url (`[login](url)`).
-    #[arg(short = 'm', long, global = true)]
+    /// Mutually exclusive with --hyperlink-url.
+    #[arg(short = 'm', long, global = true, conflicts_with = "hyperlink_url")]
     markdown_url: bool,
+
+    /// Format url columns as Google Sheets `=HYPERLINK("url", "text")`
+    /// formulas instead of plain urls — same columns as --markdown-url, and
+    /// ready to paste straight into a sheet cell. Mutually exclusive with
+    /// --markdown-url.
+    #[arg(short = 'H', long, global = true)]
+    hyperlink_url: bool,
+
+    /// Single-character argument separator inside `=HYPERLINK()` formulas
+    /// (only matters with --hyperlink-url). Google Sheets requires `;`
+    /// instead of `,` in locales with a comma decimal separator (Dutch,
+    /// German, French, ...); Sheets rejects the formula if this doesn't
+    /// match the sheet's locale. Quote it in most shells, e.g. `-P ';'`.
+    /// Defaults to `,`, or `hyperlink_separator` in config.toml.
+    #[arg(short = 'P', long, global = true, value_parser = parse_hyperlink_separator)]
+    hyperlink_separator: Option<char>,
+
+    /// Copy the output to the clipboard (macOS `pbcopy`) instead of printing
+    /// it for you to select and copy by hand. Selecting tab-separated output
+    /// from a terminal window is fragile — some terminals render tabs as
+    /// spaces on copy, which then paste as one merged Sheets cell instead of
+    /// several; piping through the real clipboard preserves the tab bytes.
+    #[arg(short = 'y', long, global = true)]
+    copy: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -59,6 +120,10 @@ struct PeriodOverride {
     /// Override the period's end date (YYYY-MM-DD). Requires --since too.
     #[arg(short = 'u', long, requires = "since")]
     until: Option<String>,
+    /// Print multi-row output oldest-first (chronological order) instead of
+    /// the default newest-first.
+    #[arg(short = 'C', long)]
+    chronological: bool,
 }
 
 #[derive(Subcommand)]
@@ -76,15 +141,16 @@ enum Command {
         #[arg(short = 'n', long)]
         no_state: bool,
         /// Print the reporter as their bare GitHub username instead of a
-        /// profile url (overrides --markdown-url for that column).
+        /// profile url (overrides --markdown-url/--hyperlink-url for that
+        /// column).
         #[arg(short = 'U', long)]
         username: bool,
         /// Look up each reporter's full GitHub display name and show it
         /// (instead of their login) wherever the reporter column has a
-        /// separate display text: as the markdown link text with
-        /// --markdown-url, or as the displayed name with --username. Falls
+        /// separate display text: as the link text with --markdown-url or
+        /// --hyperlink-url, or as the displayed name with --username. Falls
         /// back to the login for accounts with no display name set, and has
-        /// no effect on the plain profile-url output (neither flag given).
+        /// no effect on the plain profile-url output (none of those flags given).
         #[arg(short = 'F', long)]
         full_username: bool,
     },
@@ -151,6 +217,45 @@ fn parse_slash_date(s: &str) -> Result<NaiveDate> {
     NaiveDate::from_ymd_opt(year, month, day).ok_or_else(bad)
 }
 
+thread_local! {
+    static COPY_BUFFER: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Prints a data row to stdout, and — when `--copy` is active — also appends
+/// it to the in-memory buffer that gets flushed to the clipboard at the end
+/// of `main`, so both `--copy` and plain stdout output stay available.
+fn emit(line: &str) {
+    println!("{line}");
+    COPY_BUFFER.with(|b| {
+        if let Some(buf) = b.borrow_mut().as_mut() {
+            buf.push_str(line);
+            buf.push('\n');
+        }
+    });
+}
+
+/// Pipes `text` to `pbcopy`, replacing the current clipboard contents.
+fn copy_to_clipboard(text: &str) -> Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("failed to run `pbcopy` — is this macOS?")?;
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(text.as_bytes())
+        .context("failed to write to pbcopy")?;
+    let status = child.wait().context("pbcopy did not exit cleanly")?;
+    if !status.success() {
+        anyhow::bail!("pbcopy exited with {status}");
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let config_path = cli.config.clone().unwrap_or_else(config::default_path);
@@ -158,10 +263,44 @@ fn main() -> Result<()> {
     let today = Local::now().date_naive();
     let file_defaults = config::load_defaults(&config_path);
     let token = cli.token.clone().or(file_defaults.github_token);
-    let markdown_url = cli.markdown_url || file_defaults.markdown_url;
+    let link_style = if cli.hyperlink_url || file_defaults.hyperlink_url {
+        let separator = cli.hyperlink_separator.unwrap_or(file_defaults.hyperlink_separator);
+        LinkStyle::Hyperlink(separator)
+    } else if cli.markdown_url || file_defaults.markdown_url {
+        LinkStyle::Markdown
+    } else {
+        LinkStyle::Plain
+    };
 
+    let copy = cli.copy;
+    if copy {
+        COPY_BUFFER.with(|b| *b.borrow_mut() = Some(String::new()));
+    }
+
+    let result = run(cli, &config_path, &state_path, today, token.as_deref(), link_style);
+
+    if copy {
+        let buf = COPY_BUFFER.with(|b| b.borrow_mut().take()).unwrap_or_default();
+        if !buf.is_empty() {
+            copy_to_clipboard(&buf)?;
+            eprintln!("copied {} row(s) to the clipboard", buf.lines().count());
+        }
+    }
+
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run(
+    cli: Cli,
+    config_path: &PathBuf,
+    state_path: &PathBuf,
+    today: NaiveDate,
+    token: Option<&str>,
+    link_style: LinkStyle,
+) -> Result<()> {
     match cli.command {
-        Some(Command::InitConfig) => init_config(&config_path),
+        Some(Command::InitConfig) => init_config(config_path),
         Some(Command::Individual {
             since,
             until,
@@ -170,38 +309,41 @@ fn main() -> Result<()> {
             full_username,
         }) => run_individual(
             &cli.repo,
-            &config_path,
-            &state_path,
+            config_path,
+            state_path,
             since,
             until,
             no_state,
             today,
-            token.as_deref(),
-            markdown_url,
+            token,
+            link_style,
             username,
             full_username,
         ),
-        Some(Command::Weekly { over: _, since_date: Some(s) }) => {
+        Some(Command::Weekly { over, since_date: Some(s) }) => {
             let date = parse_slash_date(&s)?;
-            run_weekly_since(&cli.repo, date, today, token.as_deref(), markdown_url)
+            run_weekly_since(&cli.repo, date, today, token, link_style, over.chronological)
         }
         Some(Command::Weekly { over, since_date: None }) => {
+            let chronological = over.chronological;
             let (begin, end) = resolve_period(over, today, |t| Ok(last_completed_week(t)))?;
-            run_weekly_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
+            run_weekly_period(&cli.repo, begin, end, today, token, link_style, chronological)
         }
         Some(Command::Monthly { over, first, second }) => {
+            let chronological = over.chronological;
             let (begin, end) = resolve_period(over, today, move |t| {
                 resolve_month(t, first.clone(), second.clone())
             })?;
-            run_monthly_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
+            run_monthly_period(&cli.repo, begin, end, today, token, link_style, chronological)
         }
         Some(Command::Yearly { over, n }) => {
+            let chronological = over.chronological;
             let (begin, end) = resolve_period(over, today, move |t| Ok(resolve_year(t, n)))?;
-            run_yearly_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
+            run_yearly_period(&cli.repo, begin, end, today, token, link_style, chronological)
         }
         None => {
             let (begin, end) = resolve_implicit(today, cli.first, cli.second)?;
-            run_period(&cli.repo, begin, end, today, token.as_deref(), markdown_url)
+            run_period(&cli.repo, begin, end, today, token, link_style)
         }
     }
 }
@@ -244,7 +386,8 @@ fn run_weekly_since(
     since_date: NaiveDate,
     today: NaiveDate,
     token: Option<&str>,
-    markdown_url: bool,
+    link_style: LinkStyle,
+    chronological: bool,
 ) -> Result<()> {
     let (_, last_end) = last_completed_week(today);
     let (span_begin, _) = week_containing(since_date);
@@ -252,20 +395,22 @@ fn run_weekly_since(
         eprintln!("no completed weeks between {since_date} and {today}");
         return Ok(());
     }
-    weekly_rows(repo, span_begin, last_end, today, token, markdown_url)
+    weekly_rows(repo, span_begin, last_end, today, token, link_style, chronological)
 }
 
 /// Prints one weekly row per Wednesday-through-Tuesday week overlapping
 /// `begin..end` — a single row when the period is exactly one week (the
 /// `weekly` command's default), several when `--since`/`--until` cover a
 /// wider range.
+#[allow(clippy::too_many_arguments)]
 fn run_weekly_period(
     repo: &str,
     begin: NaiveDate,
     end: NaiveDate,
     today: NaiveDate,
     token: Option<&str>,
-    markdown_url: bool,
+    link_style: LinkStyle,
+    chronological: bool,
 ) -> Result<()> {
     let max_year = today.year() + 1;
     if begin.year() < MIN_SANE_YEAR || end.year() > max_year {
@@ -275,21 +420,24 @@ fn run_weekly_period(
     }
     let (span_begin, _) = week_containing(begin);
     let (_, span_end) = week_containing(end);
-    weekly_rows(repo, span_begin, span_end, today, token, markdown_url)
+    weekly_rows(repo, span_begin, span_end, today, token, link_style, chronological)
 }
 
 /// Prints one row per completed Wednesday-through-Tuesday week from
 /// `span_begin` through `span_end` (both assumed already week-aligned),
 /// fetching every matching issue for the whole span in a single (paginated)
 /// search rather than one search per week — the search API's own rate limit
-/// is easy to trip otherwise on a multi-week backfill.
+/// is easy to trip otherwise on a multi-week backfill. Rows print
+/// newest-first by default; pass `chronological` to print oldest-first.
+#[allow(clippy::too_many_arguments)]
 fn weekly_rows(
     repo: &str,
     span_begin: NaiveDate,
     span_end: NaiveDate,
     today: NaiveDate,
     token: Option<&str>,
-    markdown_url: bool,
+    link_style: LinkStyle,
+    chronological: bool,
 ) -> Result<()> {
     let query = format!("repo:{repo} is:issue created:{span_begin}..{span_end}");
     let items = gh::all_items(&query, token)?;
@@ -300,14 +448,33 @@ fn weekly_rows(
         );
     }
 
+    let mut weeks = Vec::new();
     let (mut begin, mut end) = (span_begin, span_begin + Duration::days(6));
     while end <= span_end {
         let (open, closed) = counts_in_range(&items, begin, end);
-        print_period_row(repo, begin, end, today, open, closed, markdown_url);
+        weeks.push((begin, end, open, closed));
         begin += Duration::days(7);
         end += Duration::days(7);
     }
+    print_rows(repo, weeks, today, link_style, chronological);
     Ok(())
+}
+
+/// Prints one `print_period_row` line per `(begin, end, open, closed)` tuple,
+/// newest-first unless `chronological` requests oldest-first.
+fn print_rows(
+    repo: &str,
+    mut rows: Vec<(NaiveDate, NaiveDate, u64, u64)>,
+    today: NaiveDate,
+    link_style: LinkStyle,
+    chronological: bool,
+) {
+    if !chronological {
+        rows.reverse();
+    }
+    for (begin, end, open, closed) in rows {
+        print_period_row(repo, begin, end, today, open, closed, link_style);
+    }
 }
 
 /// Counts, among already-fetched issue-search items, how many were created
@@ -509,7 +676,7 @@ fn run_individual(
     no_state: bool,
     today: NaiveDate,
     token: Option<&str>,
-    markdown_url: bool,
+    link_style: LinkStyle,
     username: bool,
     full_username: bool,
 ) -> Result<()> {
@@ -555,9 +722,10 @@ fn run_individual(
         let opened = NaiveDate::parse_from_str(opened_date, "%Y-%m-%d").unwrap_or(today);
 
         // The name shown in place of the login, wherever the reporter column
-        // has a display text separate from the raw url (markdown link text,
-        // or the bare --username text). One lookup per unique login per run.
-        let display_name = if full_username && (username || markdown_url) {
+        // has a display text separate from the raw url (a markdown/hyperlink
+        // link text, or the bare --username text). One lookup per unique
+        // login per run.
+        let display_name = if full_username && (username || link_style != LinkStyle::Plain) {
             full_names
                 .entry(login.to_string())
                 .or_insert_with(|| gh::user_full_name(login, token).unwrap_or(None))
@@ -570,11 +738,7 @@ fn run_individual(
             display_name
         } else {
             let user_link = format!("https://github.com/{login}");
-            if markdown_url {
-                format!("[{display_name}]({user_link})")
-            } else {
-                user_link
-            }
+            link_style.format(&display_name, &user_link)
         };
         let row = format!("{url}\t{title}\t{user}\t{opened_date}\t\t");
         rows.push((opened, row));
@@ -582,7 +746,7 @@ fn run_individual(
     rows.sort_by(|a, b| b.0.cmp(&a.0));
 
     for (_, row) in &rows {
-        println!("{row}");
+        emit(row);
     }
     eprintln!(
         "{} external-party issue(s) from {since_date} to {until_date}",
@@ -607,7 +771,7 @@ fn run_period(
     end: NaiveDate,
     today: NaiveDate,
     token: Option<&str>,
-    markdown_url: bool,
+    link_style: LinkStyle,
 ) -> Result<()> {
     let max_year = today.year() + 1;
     if begin.year() < MIN_SANE_YEAR || end.year() > max_year {
@@ -627,7 +791,7 @@ fn run_period(
 
     let open = gh::total_count(&open_q, token)?;
     let closed = gh::total_count(&closed_q, token)?;
-    print_period_row(repo, begin, end, today, open, closed, markdown_url);
+    print_period_row(repo, begin, end, today, open, closed, link_style);
 
     Ok(())
 }
@@ -648,13 +812,15 @@ fn next_month(year: i32, month: u32) -> (i32, u32) {
 /// Prints one row per calendar month overlapping `begin..end` — a single row
 /// when the period is exactly one month (the `monthly` command's default),
 /// several when `--since`/`--until` cover a wider range.
+#[allow(clippy::too_many_arguments)]
 fn run_monthly_period(
     repo: &str,
     begin: NaiveDate,
     end: NaiveDate,
     today: NaiveDate,
     token: Option<&str>,
-    markdown_url: bool,
+    link_style: LinkStyle,
+    chronological: bool,
 ) -> Result<()> {
     let max_year = today.year() + 1;
     if begin.year() < MIN_SANE_YEAR || end.year() > max_year {
@@ -676,6 +842,7 @@ fn run_monthly_period(
         );
     }
 
+    let mut months = Vec::new();
     let (mut year, mut month) = (span_begin.year(), span_begin.month());
     loop {
         let (month_begin, month_end) = (
@@ -683,25 +850,28 @@ fn run_monthly_period(
             last_day_of_month(year, month),
         );
         let (open, closed) = counts_in_range(&items, month_begin, month_end);
-        print_period_row(repo, month_begin, month_end, today, open, closed, markdown_url);
+        months.push((month_begin, month_end, open, closed));
         if month_end >= span_end {
             break;
         }
         (year, month) = next_month(year, month);
     }
+    print_rows(repo, months, today, link_style, chronological);
     Ok(())
 }
 
 /// Prints one row per calendar year overlapping `begin..end` — a single row
 /// when the period is exactly one year (the `yearly` command's default),
 /// several when `--since`/`--until` cover a wider range.
+#[allow(clippy::too_many_arguments)]
 fn run_yearly_period(
     repo: &str,
     begin: NaiveDate,
     end: NaiveDate,
     today: NaiveDate,
     token: Option<&str>,
-    markdown_url: bool,
+    link_style: LinkStyle,
+    chronological: bool,
 ) -> Result<()> {
     let max_year = today.year() + 1;
     if begin.year() < MIN_SANE_YEAR || end.year() > max_year {
@@ -725,12 +895,14 @@ fn run_yearly_period(
         );
     }
 
+    let mut years = Vec::new();
     for year in span_begin_year..=span_end_year {
         let year_begin = NaiveDate::from_ymd_opt(year, 1, 1).expect("valid Jan 1 date");
         let year_end = NaiveDate::from_ymd_opt(year, 12, 31).expect("valid Dec 31 date");
         let (open, closed) = counts_in_range(&items, year_begin, year_end);
-        print_period_row(repo, year_begin, year_end, today, open, closed, markdown_url);
+        years.push((year_begin, year_end, open, closed));
     }
+    print_rows(repo, years, today, link_style, chronological);
     Ok(())
 }
 
@@ -742,15 +914,11 @@ fn print_period_row(
     today: NaiveDate,
     open: u64,
     closed: u64,
-    markdown_url: bool,
+    link_style: LinkStyle,
 ) {
     let link_target =
         format!("https://github.com/{repo}/issues?q=is%3Aissue%20created%3A{begin}..{end}");
-    let url = if markdown_url {
-        format!("[{begin}..{end}]({link_target})")
-    } else {
-        link_target
-    };
+    let url = link_style.format(&format!("{begin}..{end}"), &link_target);
 
-    println!("{url}\t{today}\t{begin}\t{end}\t{open}\t{closed}");
+    emit(&format!("{url}\t{today}\t{begin}\t{end}\t{open}\t{closed}"));
 }

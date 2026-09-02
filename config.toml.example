@@ -24,6 +24,12 @@ extra_bots = [
 # Treat this file as a secret once you fill this in - do not commit it.
 # github_token = "ghp_..."
 
-# Format the weekly/monthly/yearly url column as a markdown link instead of
-# a plain url. Also settable per run with --markdown-url.
+# Format the weekly/monthly/yearly url column (and the `individual` reporter
+# column) as a markdown link instead of a plain url. Also settable per run
+# with --markdown-url. Mutually exclusive with hyperlink_url.
 # markdown_url = false
+
+# Same, but as a Google Sheets =HYPERLINK("url", "text") formula instead of
+# a markdown link. Also settable per run with --hyperlink-url. Mutually
+# exclusive with markdown_url.
+# hyperlink_url = false

@@ -43,16 +43,18 @@ add `--no-state` to skip reading/writing the state file.
 
 `author-profile-url` is the reporter's GitHub profile url
 (`https://github.com/<login>`) by default, or `[<login>](https://github.com/<login>)`
-with `--markdown-url`. Add `--username` to print the bare login instead
-(takes precedence over `--markdown-url` for this column).
+with `--markdown-url`, or `=HYPERLINK("https://github.com/<login>", "<login>")`
+with `--hyperlink-url` (ready to paste straight into a sheet cell). Add
+`--username` to print the bare login instead (takes precedence over
+`--markdown-url`/`--hyperlink-url` for this column).
 
 Add `--full-username` to look up each reporter's public GitHub display name
 (one API call per unique login) and show it in place of the login wherever
-the reporter column has a separate display text — the markdown link text
-with `--markdown-url`, or the printed name with `--username`. Falls back to
-the login for accounts with no display name set, and has no effect if
-neither `--markdown-url` nor `--username` is given (the plain profile-url
-output has no separate text to replace).
+the reporter column has a separate display text — the link text with
+`--markdown-url`/`--hyperlink-url`, or the printed name with `--username`.
+Falls back to the login for accounts with no display name set, and has no
+effect if none of those flags is given (the plain profile-url output has no
+separate text to replace).
 
 ### Weekly / Monthly / Yearly tabs
 
@@ -77,7 +79,19 @@ row above.
 
 Add `--markdown-url` to format the url column as a markdown link instead
 (`[2026-08-12..2026-08-18](https://github.com/apache/cloudstack/issues?q=is%3Aissue%20created%3A2026-08-12..2026-08-18)`),
-or set `markdown_url = true` in `config.toml` to make that the default.
+or `--hyperlink-url` to format it as a Google Sheets formula instead
+(`=HYPERLINK("https://github.com/apache/cloudstack/issues?q=is%3Aissue%20created%3A2026-08-12..2026-08-18", "2026-08-12..2026-08-18")`) —
+paste that straight into the sheet's url cell and it renders as a link. The
+two are mutually exclusive; set `markdown_url = true` or `hyperlink_url =
+true` in `config.toml` to make one the default.
+
+Google Sheets rejects that formula if built with the wrong argument
+separator for the sheet's locale: English-like locales expect `,` (the
+default), but locales with a comma decimal separator (Dutch, German,
+French, ...) expect `;` instead. Pass `--hyperlink-separator` a single
+literal character to use instead — quote it in most shells, e.g.
+`--hyperlink-separator ';'` or `-P ';'` (or set `hyperlink_separator = ";"`
+in `config.toml`).
 
 Period boundaries:
 - **weekly**: the most recently completed Wednesday→Tuesday window (matches
@@ -111,6 +125,10 @@ year (`yearly`), one row per month/year is printed instead of a single
 aggregate row; a period that resolves to exactly one month/year still
 prints a single row.
 
+Multi-row output from `weekly`/`monthly`/`yearly` prints newest period first
+by default. Add `--chronological` (`-C`) to print oldest-first instead. Has
+no visible effect when the period resolves to a single row.
+
 **The `monthly`/`yearly` subcommand names are optional** whenever a month
 name and/or a year is given directly — it's inferred: a month name (with or
 without a year, either order) implies `monthly`; a bare year alone implies
@@ -141,6 +159,19 @@ years back.
   To use a personal access token instead, pass `--token <TOKEN>` or set
   `github_token = "ghp_..."` in `config.toml` (the flag takes precedence).
 
+### Pasting into Sheets
+
+Output is tab-separated so it splits into columns on paste — but only if the
+tabs actually survive the trip to your clipboard. Selecting output by hand in
+a terminal window is fragile: some terminals render a tab as spaces and copy
+what's rendered, not the original byte, so what lands in Sheets is one column
+per row instead of several (with no visible warning — the paste just looks
+wrong, cells run together, and a `=HYPERLINK(...)` formula from one row can
+swallow the value that should've landed in the cell after it). Use `--copy`
+to skip the terminal entirely — it pipes the output straight through
+`pbcopy` (macOS), so the real tab bytes reach the clipboard: `issuetrack
+--copy weekly`, then paste directly into the sheet.
+
 ## Command reference
 
 Subcommand names can be abbreviated to any unambiguous prefix (`issuetrack
@@ -157,7 +188,10 @@ Apply to every subcommand (and to the implicit month/year shortcut).
 | `--config <PATH>` | `-c` | Path to `config.toml` (default: `~/.config/issuetrack/config.toml`) |
 | `--state <PATH>` | `-S` | Path to the state file (default: `~/.config/issuetrack/state.json`) |
 | `--token <TOKEN>` | `-t` | GitHub personal access token, instead of `gh`'s own stored login |
-| `--markdown-url` | `-m` | Format url columns as markdown links: the weekly/monthly/yearly period url as `[begin..end](url)`, and the `individual` reporter's profile url as `[login](url)` |
+| `--markdown-url` | `-m` | Format url columns as markdown links: the weekly/monthly/yearly period url as `[begin..end](url)`, and the `individual` reporter's profile url as `[login](url)`. Mutually exclusive with `--hyperlink-url` |
+| `--hyperlink-url` | `-H` | Format url columns as Google Sheets formulas instead: `=HYPERLINK(url, "begin..end")` / `=HYPERLINK(url, "login")` — paste straight into a sheet cell. Mutually exclusive with `--markdown-url` |
+| `--hyperlink-separator <CHAR>` | `-P` | Single literal character to use as the argument separator inside `=HYPERLINK()` formulas (only matters with `--hyperlink-url`); default `,` — e.g. `-P ';'` |
+| `--copy` | `-y` | Copy the output to the clipboard (macOS `pbcopy`) instead of relying on selecting it from the terminal — see [Pasting into Sheets](#pasting-into-sheets) below |
 | `--help` | `-h` | Print help |
 | `--version` | `-V` | Print version |
 
@@ -171,8 +205,8 @@ issues, for the ACSissues tab.
 | `--since <YYYY-MM-DD>` | `-s` | Start date (default: last recorded state run, or 7 days ago) |
 | `--until <YYYY-MM-DD>` | `-u` | End date (default: today) |
 | `--no-state` | `-n` | Don't read or update the state file |
-| `--username` | `-U` | Print the reporter as their bare GitHub username instead of a profile url (overrides `--markdown-url` for this column) |
-| `--full-username` | `-F` | Look up each reporter's GitHub display name and use it in place of the login as the markdown link text (`--markdown-url`) or `--username` text; no effect otherwise |
+| `--username` | `-U` | Print the reporter as their bare GitHub username instead of a profile url (overrides `--markdown-url`/`--hyperlink-url` for this column) |
+| `--full-username` | `-F` | Look up each reporter's GitHub display name and use it in place of the login as the link text (`--markdown-url`/`--hyperlink-url`) or `--username` text; no effect otherwise |
 
 ### `weekly`
 
@@ -182,6 +216,7 @@ One summary row per completed Wed→Tue week, for the Weekly tab.
 |---|---|---|
 | `--since <YYYY-MM-DD>` / `--until <YYYY-MM-DD>` | `-s` / `-u` | Manual override of the period (both required together) |
 | `[DATE]` positional (`yyyy/mm/dd` or `yy/mm/dd`) | | Print one row per completed week from the week containing `DATE` through the most recently completed week |
+| `--chronological` | `-C` | Print multi-row output oldest-first instead of the default newest-first |
 
 Default (no args): the single most recently completed Wed→Tue window. Any
 resolved period longer than one week (via `[DATE]` or a wide `--since`/
@@ -196,6 +231,7 @@ Same row shape, for a calendar month.
 | `--since` / `--until` | `-s` / `-u` | Manual override (same as `weekly`) |
 | `[FIRST]` | | Months back (negative number), or a month name/abbreviation, or a year |
 | `[SECOND]` | | A year, paired with a month name in `FIRST` (either order) |
+| `--chronological` | `-C` | Print multi-row output oldest-first instead of the default newest-first |
 
 Examples: `monthly`, `monthly -3`, `monthly aug`, `monthly aug 2021`, `monthly 2021 aug`.
 
@@ -210,6 +246,7 @@ Same row shape, for a calendar year.
 |---|---|---|
 | `--since` / `--until` | `-s` / `-u` | Manual override (same as `weekly`) |
 | `[N]` | | `0` = current year (default); negative = N years back; positive = absolute year (2- or 4-digit) |
+| `--chronological` | `-C` | Print multi-row output oldest-first instead of the default newest-first |
 
 A `--since`/`--until` override spanning more than one calendar year prints
 one row per year instead of a single row.

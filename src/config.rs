@@ -2,7 +2,17 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Deserialize, Default)]
+/// Default argument separator for `=HYPERLINK()` formulas. Google Sheets
+/// picks this per document locale: English-like locales use `,`; locales
+/// with a comma decimal separator (Dutch, German, French, ...) require `;`
+/// instead, and reject a formula built with the wrong one.
+pub const DEFAULT_HYPERLINK_SEPARATOR: char = ',';
+
+fn default_hyperlink_separator() -> char {
+    DEFAULT_HYPERLINK_SEPARATOR
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub excluded_users: Vec<String>,
@@ -12,6 +22,23 @@ pub struct Config {
     pub github_token: Option<String>,
     #[serde(default, alias = "markdown-url")]
     pub markdown_url: bool,
+    #[serde(default, alias = "hyperlink-url")]
+    pub hyperlink_url: bool,
+    #[serde(default = "default_hyperlink_separator", alias = "hyperlink-separator")]
+    pub hyperlink_separator: char,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            excluded_users: Vec::new(),
+            extra_bots: Vec::new(),
+            github_token: None,
+            markdown_url: false,
+            hyperlink_url: false,
+            hyperlink_separator: default_hyperlink_separator(),
+        }
+    }
 }
 
 impl Config {
@@ -53,9 +80,10 @@ pub fn default_path() -> PathBuf {
 }
 
 /// Reads the config file for its optional defaults (`github_token`,
-/// `markdown_url`), falling back to `Config::default()` if the file is
-/// missing or unreadable. Unlike `Config::load`, that's not an error here —
-/// most commands don't require a config file at all.
+/// `markdown_url`, `hyperlink_url`, `hyperlink_separator`), falling back to
+/// `Config::default()` if the file is missing or unreadable. Unlike
+/// `Config::load`, that's not an error here — most commands don't require a
+/// config file at all.
 pub fn load_defaults(path: &Path) -> Config {
     std::fs::read_to_string(path)
         .ok()
@@ -82,7 +110,20 @@ extra_bots = [
 # line. Leave unset to keep using `gh auth login`.
 # github_token = "ghp_..."
 
-# Format the weekly/monthly/yearly url column as a markdown link instead of
-# a plain url. Also settable per run with --markdown-url.
+# Format the weekly/monthly/yearly url column (and the `individual` reporter
+# column) as a markdown link instead of a plain url. Also settable per run
+# with --markdown-url. Mutually exclusive with hyperlink_url.
 # markdown_url = false
+
+# Same, but as a Google Sheets =HYPERLINK("url", "text") formula instead of
+# a markdown link. Also settable per run with --hyperlink-url. Mutually
+# exclusive with markdown_url.
+# hyperlink_url = false
+
+# Single-character argument separator inside =HYPERLINK() formulas. Most
+# locales use "," (the default); locales with a comma decimal separator
+# (Dutch, German, French, ...) reject a formula built with "," and need ";"
+# instead. Also settable per run with --hyperlink-separator. Only matters
+# with hyperlink_url.
+# hyperlink_separator = ","
 "#;

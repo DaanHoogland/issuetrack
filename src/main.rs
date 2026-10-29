@@ -50,9 +50,11 @@ fn parse_hyperlink_separator(s: &str) -> std::result::Result<char, String> {
 #[derive(Parser)]
 #[command(name = "issuetrack", version, about, infer_subcommands = true)]
 struct Cli {
-    /// GitHub repo to query
-    #[arg(short = 'r', long, global = true, default_value = "apache/cloudstack")]
-    repo: String,
+    /// GitHub repo(s) to query, as owner/name. Repeatable (`-r a/b -r c/d`)
+    /// or comma-separated (`-r a/b,c/d`). Falls back to `repos` in
+    /// config.toml, then to apache/cloudstack.
+    #[arg(short = 'r', long, global = true, value_delimiter = ',')]
+    repo: Vec<String>,
 
     /// Path to config.toml (excluded ShapeBlue users / extra bots)
     #[arg(short = 'c', long, global = true)]
@@ -262,6 +264,7 @@ fn main() -> Result<()> {
     let state_path = cli.state.clone().unwrap_or_else(state::default_path);
     let today = Local::now().date_naive();
     let file_defaults = config::load_defaults(&config_path);
+    let repos = resolve_repos(&cli.repo, &file_defaults.repos)?;
     let token = cli.token.clone().or(file_defaults.github_token);
     let link_style = if cli.hyperlink_url || file_defaults.hyperlink_url {
         let separator = cli.hyperlink_separator.unwrap_or(file_defaults.hyperlink_separator);
@@ -277,7 +280,7 @@ fn main() -> Result<()> {
         COPY_BUFFER.with(|b| *b.borrow_mut() = Some(String::new()));
     }
 
-    let result = run(cli, &config_path, &state_path, today, token.as_deref(), link_style);
+    let result = run(cli, &repos, &config_path, &state_path, today, token.as_deref(), link_style);
 
     if copy {
         let buf = COPY_BUFFER.with(|b| b.borrow_mut().take()).unwrap_or_default();
@@ -290,9 +293,62 @@ fn main() -> Result<()> {
     result
 }
 
+const DEFAULT_REPO: &str = "apache/cloudstack";
+
+/// The repos to query: `--repo` values if any were given, else `repos` from
+/// config.toml, else `DEFAULT_REPO`. Each must look like `owner/name` —
+/// anything else would be spliced into the search query as extra
+/// qualifiers. Duplicates (case-insensitively) are dropped, keeping the
+/// first spelling.
+fn resolve_repos(cli_repos: &[String], config_repos: &[String]) -> Result<Vec<String>> {
+    let source = if !cli_repos.is_empty() { cli_repos } else { config_repos };
+    let mut repos: Vec<String> = Vec::new();
+    for raw in source {
+        let repo = raw.trim();
+        if repo.is_empty() {
+            continue;
+        }
+        let valid = repo.split('/').count() == 2
+            && repo.split('/').all(|part| {
+                !part.is_empty()
+                    && part.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+            });
+        if !valid {
+            anyhow::bail!("invalid repo '{repo}', expected owner/name (e.g. apache/cloudstack)");
+        }
+        if !repos.iter().any(|r| r.eq_ignore_ascii_case(repo)) {
+            repos.push(repo.to_string());
+        }
+    }
+    if repos.is_empty() {
+        repos.push(DEFAULT_REPO.to_string());
+    }
+    Ok(repos)
+}
+
+/// `repo:a/b repo:c/d` — GitHub search ORs repeated `repo:` qualifiers, so
+/// one query (and one paginated fetch) covers every repo at once.
+fn repo_qualifiers(repos: &[String]) -> String {
+    repos
+        .iter()
+        .map(|r| format!("repo:{r}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The `owner/name` an issue-search item belongs to, from its
+/// `repository_url` (`https://api.github.com/repos/owner/name`).
+fn item_repo(item: &Value) -> &str {
+    item.get("repository_url")
+        .and_then(|v| v.as_str())
+        .and_then(|u| u.strip_prefix("https://api.github.com/repos/"))
+        .unwrap_or("")
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     cli: Cli,
+    repos: &[String],
     config_path: &PathBuf,
     state_path: &PathBuf,
     today: NaiveDate,
@@ -308,7 +364,7 @@ fn run(
             username,
             full_username,
         }) => run_individual(
-            &cli.repo,
+            repos,
             config_path,
             state_path,
             since,
@@ -322,28 +378,28 @@ fn run(
         ),
         Some(Command::Weekly { over, since_date: Some(s) }) => {
             let date = parse_slash_date(&s)?;
-            run_weekly_since(&cli.repo, date, today, token, link_style, over.chronological)
+            run_weekly_since(repos, date, today, token, link_style, over.chronological)
         }
         Some(Command::Weekly { over, since_date: None }) => {
             let chronological = over.chronological;
             let (begin, end) = resolve_period(over, today, |t| Ok(last_completed_week(t)))?;
-            run_weekly_period(&cli.repo, begin, end, today, token, link_style, chronological)
+            run_weekly_period(repos, begin, end, today, token, link_style, chronological)
         }
         Some(Command::Monthly { over, first, second }) => {
             let chronological = over.chronological;
             let (begin, end) = resolve_period(over, today, move |t| {
                 resolve_month(t, first.clone(), second.clone())
             })?;
-            run_monthly_period(&cli.repo, begin, end, today, token, link_style, chronological)
+            run_monthly_period(repos, begin, end, today, token, link_style, chronological)
         }
         Some(Command::Yearly { over, n }) => {
             let chronological = over.chronological;
             let (begin, end) = resolve_period(over, today, move |t| Ok(resolve_year(t, n)))?;
-            run_yearly_period(&cli.repo, begin, end, today, token, link_style, chronological)
+            run_yearly_period(repos, begin, end, today, token, link_style, chronological)
         }
         None => {
             let (begin, end) = resolve_implicit(today, cli.first, cli.second)?;
-            run_period(&cli.repo, begin, end, today, token, link_style)
+            run_period(repos, begin, end, today, token, link_style)
         }
     }
 }
@@ -382,7 +438,7 @@ fn week_containing(date: NaiveDate) -> (NaiveDate, NaiveDate) {
 /// Prints one weekly row per completed Wednesday-through-Tuesday week, from
 /// the week containing `since_date` through the most recently completed week.
 fn run_weekly_since(
-    repo: &str,
+    repos: &[String],
     since_date: NaiveDate,
     today: NaiveDate,
     token: Option<&str>,
@@ -395,7 +451,7 @@ fn run_weekly_since(
         eprintln!("no completed weeks between {since_date} and {today}");
         return Ok(());
     }
-    weekly_rows(repo, span_begin, last_end, today, token, link_style, chronological)
+    weekly_rows(repos, span_begin, last_end, today, token, link_style, chronological)
 }
 
 /// Prints one weekly row per Wednesday-through-Tuesday week overlapping
@@ -404,7 +460,7 @@ fn run_weekly_since(
 /// wider range.
 #[allow(clippy::too_many_arguments)]
 fn run_weekly_period(
-    repo: &str,
+    repos: &[String],
     begin: NaiveDate,
     end: NaiveDate,
     today: NaiveDate,
@@ -420,7 +476,7 @@ fn run_weekly_period(
     }
     let (span_begin, _) = week_containing(begin);
     let (_, span_end) = week_containing(end);
-    weekly_rows(repo, span_begin, span_end, today, token, link_style, chronological)
+    weekly_rows(repos, span_begin, span_end, today, token, link_style, chronological)
 }
 
 /// Prints one row per completed Wednesday-through-Tuesday week from
@@ -431,7 +487,7 @@ fn run_weekly_period(
 /// newest-first by default; pass `chronological` to print oldest-first.
 #[allow(clippy::too_many_arguments)]
 fn weekly_rows(
-    repo: &str,
+    repos: &[String],
     span_begin: NaiveDate,
     span_end: NaiveDate,
     today: NaiveDate,
@@ -439,49 +495,76 @@ fn weekly_rows(
     link_style: LinkStyle,
     chronological: bool,
 ) -> Result<()> {
-    let query = format!("repo:{repo} is:issue created:{span_begin}..{span_end}");
-    let items = gh::all_items(&query, token)?;
-    if items.len() >= 1000 {
-        eprintln!(
-            "warning: {span_begin}..{span_end} hit the search API's 1000-result cap — \
-             some weeks' counts may be undercounted; narrow the range if needed"
-        );
-    }
+    let items = fetch_span(repos, span_begin, span_end, "weeks", token)?;
 
     let mut weeks = Vec::new();
     let (mut begin, mut end) = (span_begin, span_begin + Duration::days(6));
     while end <= span_end {
-        let (open, closed) = counts_in_range(&items, begin, end);
-        weeks.push((begin, end, open, closed));
+        weeks.push((begin, end));
         begin += Duration::days(7);
         end += Duration::days(7);
     }
-    print_rows(repo, weeks, today, link_style, chronological);
+    print_rows(repos, &items, weeks, today, link_style, chronological);
     Ok(())
 }
 
-/// Prints one `print_period_row` line per `(begin, end, open, closed)` tuple,
-/// newest-first unless `chronological` requests oldest-first.
+/// Fetches every issue created in `span_begin..span_end` across all
+/// `repos` in a single (paginated) search, warning when the combined result
+/// hits the search API's 1000-result cap. `unit` names the sub-periods the
+/// caller will bucket into, for the warning text.
+fn fetch_span(
+    repos: &[String],
+    span_begin: NaiveDate,
+    span_end: NaiveDate,
+    unit: &str,
+    token: Option<&str>,
+) -> Result<Vec<Value>> {
+    let query = format!(
+        "{} is:issue created:{span_begin}..{span_end}",
+        repo_qualifiers(repos)
+    );
+    let items = gh::all_items(&query, token)?;
+    if items.len() >= 1000 {
+        eprintln!(
+            "warning: {span_begin}..{span_end} hit the search API's 1000-result cap — \
+             some {unit}' counts may be undercounted; narrow the range (or the repo list) \
+             if needed"
+        );
+    }
+    Ok(items)
+}
+
+/// Prints one `print_period_row` line per period per repo — periods
+/// newest-first unless `chronological` requests oldest-first, and within a
+/// period the repos in the order given.
 fn print_rows(
-    repo: &str,
-    mut rows: Vec<(NaiveDate, NaiveDate, u64, u64)>,
+    repos: &[String],
+    items: &[Value],
+    mut periods: Vec<(NaiveDate, NaiveDate)>,
     today: NaiveDate,
     link_style: LinkStyle,
     chronological: bool,
 ) {
     if !chronological {
-        rows.reverse();
+        periods.reverse();
     }
-    for (begin, end, open, closed) in rows {
-        print_period_row(repo, begin, end, today, open, closed, link_style);
+    let show_repo = repos.len() > 1;
+    for (begin, end) in periods {
+        for repo in repos {
+            let (open, closed) = counts_in_range(items, repo, begin, end);
+            print_period_row(repo, show_repo, begin, end, today, open, closed, link_style);
+        }
     }
 }
 
-/// Counts, among already-fetched issue-search items, how many were created
-/// within `begin..end` and are currently open vs. closed.
-fn counts_in_range(items: &[Value], begin: NaiveDate, end: NaiveDate) -> (u64, u64) {
+/// Counts, among already-fetched issue-search items, how many from `repo`
+/// were created within `begin..end` and are currently open vs. closed.
+fn counts_in_range(items: &[Value], repo: &str, begin: NaiveDate, end: NaiveDate) -> (u64, u64) {
     let (mut open, mut closed) = (0u64, 0u64);
     for item in items {
+        if !item_repo(item).eq_ignore_ascii_case(repo) {
+            continue;
+        }
         let created_at = item
             .get("created_at")
             .and_then(|v| v.as_str())
@@ -668,7 +751,7 @@ fn init_config(path: &PathBuf) -> Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 fn run_individual(
-    repo: &str,
+    repos: &[String],
     config_path: &PathBuf,
     state_path: &PathBuf,
     since: Option<String>,
@@ -698,7 +781,10 @@ fn run_individual(
             .unwrap_or_else(|| today - Duration::days(7)),
     };
 
-    let query = format!("repo:{repo} is:issue created:{since_date}..{until_date}");
+    let query = format!(
+        "{} is:issue created:{since_date}..{until_date}",
+        repo_qualifiers(repos)
+    );
     let items = gh::all_items(&query, token)?;
 
     let mut full_names: std::collections::HashMap<String, Option<String>> = Default::default();
@@ -770,8 +856,11 @@ fn run_individual(
 /// Apache CloudStack's repo predates this; nothing legitimate resolves outside it.
 const MIN_SANE_YEAR: i32 = 2008;
 
+/// Prints one row per repo for `begin..end`, using two count-only searches
+/// per repo (a combined query can't split counts by repo). `closed` means
+/// created in the window and closed *now*, not closed during the window.
 fn run_period(
-    repo: &str,
+    repos: &[String],
     begin: NaiveDate,
     end: NaiveDate,
     today: NaiveDate,
@@ -787,16 +876,15 @@ fn run_period(
         );
     }
 
-    // open/closed reflect the *current* status of issues created in this
-    // window (so open + closed always equals the window's total), not
-    // "closed during the window" — an issue created in this period may have
-    // been closed long after it ended.
-    let open_q = format!("repo:{repo} is:issue is:open created:{begin}..{end}");
-    let closed_q = format!("repo:{repo} is:issue is:closed created:{begin}..{end}");
+    let show_repo = repos.len() > 1;
+    for repo in repos {
+        let open_q = format!("repo:{repo} is:issue is:open created:{begin}..{end}");
+        let closed_q = format!("repo:{repo} is:issue is:closed created:{begin}..{end}");
 
-    let open = gh::total_count(&open_q, token)?;
-    let closed = gh::total_count(&closed_q, token)?;
-    print_period_row(repo, begin, end, today, open, closed, link_style);
+        let open = gh::total_count(&open_q, token)?;
+        let closed = gh::total_count(&closed_q, token)?;
+        print_period_row(repo, show_repo, begin, end, today, open, closed, link_style);
+    }
 
     Ok(())
 }
@@ -819,7 +907,7 @@ fn next_month(year: i32, month: u32) -> (i32, u32) {
 /// several when `--since`/`--until` cover a wider range.
 #[allow(clippy::too_many_arguments)]
 fn run_monthly_period(
-    repo: &str,
+    repos: &[String],
     begin: NaiveDate,
     end: NaiveDate,
     today: NaiveDate,
@@ -838,14 +926,7 @@ fn run_monthly_period(
     let (span_begin, _) = month_containing(begin);
     let (_, span_end) = month_containing(end);
 
-    let query = format!("repo:{repo} is:issue created:{span_begin}..{span_end}");
-    let items = gh::all_items(&query, token)?;
-    if items.len() >= 1000 {
-        eprintln!(
-            "warning: {span_begin}..{span_end} hit the search API's 1000-result cap — \
-             some months' counts may be undercounted; narrow the range if needed"
-        );
-    }
+    let items = fetch_span(repos, span_begin, span_end, "months", token)?;
 
     let mut months = Vec::new();
     let (mut year, mut month) = (span_begin.year(), span_begin.month());
@@ -854,14 +935,13 @@ fn run_monthly_period(
             NaiveDate::from_ymd_opt(year, month, 1).expect("valid first-of-month date"),
             last_day_of_month(year, month),
         );
-        let (open, closed) = counts_in_range(&items, month_begin, month_end);
-        months.push((month_begin, month_end, open, closed));
+        months.push((month_begin, month_end));
         if month_end >= span_end {
             break;
         }
         (year, month) = next_month(year, month);
     }
-    print_rows(repo, months, today, link_style, chronological);
+    print_rows(repos, &items, months, today, link_style, chronological);
     Ok(())
 }
 
@@ -870,7 +950,7 @@ fn run_monthly_period(
 /// several when `--since`/`--until` cover a wider range.
 #[allow(clippy::too_many_arguments)]
 fn run_yearly_period(
-    repo: &str,
+    repos: &[String],
     begin: NaiveDate,
     end: NaiveDate,
     today: NaiveDate,
@@ -891,29 +971,22 @@ fn run_yearly_period(
     let span_begin = NaiveDate::from_ymd_opt(span_begin_year, 1, 1).expect("valid Jan 1 date");
     let span_end = NaiveDate::from_ymd_opt(span_end_year, 12, 31).expect("valid Dec 31 date");
 
-    let query = format!("repo:{repo} is:issue created:{span_begin}..{span_end}");
-    let items = gh::all_items(&query, token)?;
-    if items.len() >= 1000 {
-        eprintln!(
-            "warning: {span_begin}..{span_end} hit the search API's 1000-result cap — \
-             some years' counts may be undercounted; narrow the range if needed"
-        );
-    }
+    let items = fetch_span(repos, span_begin, span_end, "years", token)?;
 
     let mut years = Vec::new();
     for year in span_begin_year..=span_end_year {
         let year_begin = NaiveDate::from_ymd_opt(year, 1, 1).expect("valid Jan 1 date");
         let year_end = NaiveDate::from_ymd_opt(year, 12, 31).expect("valid Dec 31 date");
-        let (open, closed) = counts_in_range(&items, year_begin, year_end);
-        years.push((year_begin, year_end, open, closed));
+        years.push((year_begin, year_end));
     }
-    print_rows(repo, years, today, link_style, chronological);
+    print_rows(repos, &items, years, today, link_style, chronological);
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 fn print_period_row(
     repo: &str,
+    show_repo: bool,
     begin: NaiveDate,
     end: NaiveDate,
     today: NaiveDate,
@@ -923,7 +996,14 @@ fn print_period_row(
 ) {
     let link_target =
         format!("https://github.com/{repo}/issues?q=is%3Aissue%20created%3A{begin}..{end}");
-    let url = link_style.format(&format!("{begin}..{end}"), &link_target);
+    // With several repos the plain url still names its repo, but a
+    // markdown/hyperlink label wouldn't, so prefix it there.
+    let label = if show_repo {
+        format!("{repo} {begin}..{end}")
+    } else {
+        format!("{begin}..{end}")
+    };
+    let url = link_style.format(&label, &link_target);
 
     emit(&format!("{url}\t{today}\t{begin}\t{end}\t{open}\t{closed}"));
 }

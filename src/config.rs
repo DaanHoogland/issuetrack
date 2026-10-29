@@ -15,6 +15,8 @@ fn default_hyperlink_separator() -> char {
 #[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    pub repos: Vec<String>,
+    #[serde(default)]
     pub excluded_users: Vec<String>,
     #[serde(default)]
     pub extra_bots: Vec<String>,
@@ -31,6 +33,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            repos: Vec::new(),
             excluded_users: Vec::new(),
             extra_bots: Vec::new(),
             github_token: None,
@@ -79,7 +82,7 @@ pub fn default_path() -> PathBuf {
         .join(".config/issuetrack/config.toml")
 }
 
-/// Reads the config file for its optional defaults (`github_token`,
+/// Reads the config file for its optional defaults (`repos`, `github_token`,
 /// `markdown_url`, `hyperlink_url`, `hyperlink_separator`), falling back to
 /// `Config::default()` if the file is missing or unreadable. Unlike
 /// `Config::load`, that's not an error here — most commands don't require a
@@ -91,7 +94,11 @@ pub fn load_defaults(path: &Path) -> Config {
         .unwrap_or_default()
 }
 
-pub const STARTER: &str = r#"# ShapeBlue GitHub usernames to exclude from the "external party" issue list.
+pub const STARTER: &str = r#"# GitHub repos (owner/name) to query. Overridden by --repo on the command
+# line. Defaults to apache/cloudstack when empty or unset.
+# repos = ["apache/cloudstack", "apache/cloudstack-terraform-provider"]
+
+# ShapeBlue GitHub usernames to exclude from the "external party" issue list.
 # Add one entry per known ShapeBlue employee GitHub account. Some employees use
 # a personal, apache.org, or noreply address instead of @shapeblue.com, so this
 # list is maintained by GitHub username, not by email domain.

@@ -154,7 +154,34 @@ years back.
   bucket locally by week, instead of two searches per week — keeps a
   multi-month backfill well under the search API's own 30-requests/minute
   limit.
-- Repo defaults to `apache/cloudstack`; override with `--repo owner/name`.
+- Repo defaults to `apache/cloudstack`; override with `--repo owner/name`,
+  or set `repos = ["owner/name", ...]` in `config.toml` (the flag takes
+  precedence). See [Multiple repos](#multiple-repos) below.
+
+### Multiple repos
+
+Give `--repo` more than once, or comma-separated, to cover several repos in
+one run:
+
+```
+issuetrack -r apache/cloudstack -r apache/cloudstack-terraform-provider weekly
+issuetrack -r apache/cloudstack,apache/cloudstack-terraform-provider individual
+```
+
+- `weekly`/`monthly`/`yearly` print one row per repo per period, repos in the
+  order given (newest period first unless `--chronological`). Each row's url
+  points at its own repo; with `--markdown-url`/`--hyperlink-url` the link
+  text is prefixed with the repo too (`apache/cloudstack 2026-10-21..2026-10-27`),
+  since it wouldn't otherwise say which repo the row is for.
+- `individual` lists issues from all repos together in one date-sorted list —
+  each row's issue url already names its repo.
+- All repos are fetched in a single combined search (`repo:a repo:b ...`)
+  and split locally, so adding repos doesn't multiply search calls. The
+  flip side: the search API's 1000-result cap applies to the combined total.
+  The implicit `issuetrack <month> <year>` shortcut is the exception — it
+  does two count queries per repo.
+- The state file's `last_individual` date is shared, not per repo — changing
+  the repo list between runs doesn't reset it.
 - By default, GitHub requests use `gh`'s own stored login (`gh auth login`).
   To use a personal access token instead, pass `--token <TOKEN>` or set
   `github_token = "ghp_..."` in `config.toml` (the flag takes precedence).
@@ -184,7 +211,7 @@ Apply to every subcommand (and to the implicit month/year shortcut).
 
 | Option | Short | Description |
 |---|---|---|
-| `--repo <REPO>` | `-r` | GitHub repo to query (default: `apache/cloudstack`) |
+| `--repo <REPO>` | `-r` | GitHub repo(s) to query, as `owner/name`; repeatable or comma-separated (default: `repos` in `config.toml`, else `apache/cloudstack`) — see [Multiple repos](#multiple-repos) |
 | `--config <PATH>` | `-c` | Path to `config.toml` (default: `~/.config/issuetrack/config.toml`) |
 | `--state <PATH>` | `-S` | Path to the state file (default: `~/.config/issuetrack/state.json`) |
 | `--token <TOKEN>` | `-t` | GitHub personal access token, instead of `gh`'s own stored login |

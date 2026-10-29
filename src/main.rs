@@ -856,6 +856,9 @@ fn run_individual(
 /// Apache CloudStack's repo predates this; nothing legitimate resolves outside it.
 const MIN_SANE_YEAR: i32 = 2008;
 
+/// Prints one row per repo for `begin..end`, using two count-only searches
+/// per repo (a combined query can't split counts by repo). `closed` means
+/// created in the window and closed *now*, not closed during the window.
 fn run_period(
     repos: &[String],
     begin: NaiveDate,
@@ -873,13 +876,6 @@ fn run_period(
         );
     }
 
-    // open/closed reflect the *current* status of issues created in this
-    // window (so open + closed always equals the window's total), not
-    // "closed during the window" — an issue created in this period may have
-    // been closed long after it ended.
-    // Two count-only searches per repo: a combined multi-repo query can't
-    // split total_count by repo, and fetching every item instead would hit
-    // the 1000-result cap on a busy year.
     let show_repo = repos.len() > 1;
     for repo in repos {
         let open_q = format!("repo:{repo} is:issue is:open created:{begin}..{end}");

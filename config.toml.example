@@ -3,6 +3,15 @@
 # Copy to ~/.config/issuetrack/config.toml (or generate a starter with
 # `issuetrack init-config`) and edit to fit. All fields are optional.
 
+# GitHub repos (owner/name) to query. Overridden by --repo on the command
+# line (repeatable, or comma-separated). Defaults to apache/cloudstack when
+# empty or unset. Period commands print one row per repo per period;
+# `individual` lists issues from all repos together.
+repos = [
+  "apache/cloudstack",
+  "apache/cloudstack-terraform-provider",
+]
+
 # ShapeBlue GitHub usernames to exclude from the "external party" issue list.
 # Add one entry per known ShapeBlue employee GitHub account. Some employees use
 # a personal, apache.org, or noreply address instead of @shapeblue.com, so this

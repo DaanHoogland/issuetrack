@@ -198,7 +198,8 @@ Apply to every subcommand (and to the implicit month/year shortcut).
 ### `individual`
 
 TSV rows (url, title, user profile url, opened date) of new external-party
-issues, for the ACSissues tab.
+issues, for the ACSissues tab. Issues GitHub itself has closed as a duplicate
+(`state_reason: duplicate`) are skipped.
 
 | Option | Short | Description |
 |---|---|---|

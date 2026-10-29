@@ -712,6 +712,11 @@ fn run_individual(
         if login.is_empty() || !cfg.is_external(login) {
             continue;
         }
+        // Closed-as-duplicate issues aren't distinct tracking items — skip
+        // them rather than listing a dupe alongside the issue it duplicates.
+        if item.get("state_reason").and_then(|v| v.as_str()) == Some("duplicate") {
+            continue;
+        }
         let url = item.get("html_url").and_then(|v| v.as_str()).unwrap_or("");
         let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
         let created_at = item

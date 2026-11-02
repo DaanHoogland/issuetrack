@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use serde_json::Value;
 use std::process::Command;
 
@@ -71,6 +72,15 @@ pub fn all_items(query: &str, token: Option<&str>) -> Result<Vec<Value>> {
         page += 1;
     }
     Ok(items)
+}
+
+/// The date part of a search item's `created_at` timestamp
+/// (`2026-10-29T14:03:00Z` -> 2026-10-29), or `None` if it's missing or
+/// malformed.
+pub fn created_date(item: &Value) -> Option<NaiveDate> {
+    let created_at = item.get("created_at")?.as_str()?;
+    let date_str = created_at.split('T').next().unwrap_or(created_at);
+    NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()
 }
 
 /// A GitHub account's public display name (the "Name" field on its profile),

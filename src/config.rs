@@ -134,3 +134,20 @@ extra_bots = [
 # with hyperlink_url.
 # hyperlink_separator = ","
 "#;
+
+pub fn init_config(path: &PathBuf) -> Result<()> {
+    if path.exists() {
+        anyhow::bail!(
+            "config file already exists at {} — edit it directly, refusing to overwrite",
+            path.display()
+        );
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, STARTER)
+        .with_context(|| format!("writing starter config to {}", path.display()))?;
+    println!("wrote starter config to {}", path.display());
+    println!("edit it to add ShapeBlue GitHub usernames before running `individual`");
+    Ok(())
+}

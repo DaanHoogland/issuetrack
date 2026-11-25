@@ -9,9 +9,70 @@ use chrono::NaiveDate;
 use serde_json::Value;
 
 use crate::ctx::Ctx;
+use crate::fields::{Column, Field, FieldSpec, FieldsConfig};
 use crate::gh;
-use crate::output::emit;
+use crate::output::{Cell, emit_cells};
 use crate::repos::{item_repo, repo_qualifiers};
+
+/// The weekly/monthly/yearly commands' columns, in default order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PeriodField {
+    Url,
+    Date,
+    Begin,
+    End,
+    Open,
+    Closed,
+}
+
+impl Field for PeriodField {
+    const ALL: &'static [Self] = &[
+        PeriodField::Url,
+        PeriodField::Date,
+        PeriodField::Begin,
+        PeriodField::End,
+        PeriodField::Open,
+        PeriodField::Closed,
+    ];
+    const COMMANDS: &'static str = "weekly/monthly/yearly";
+    const CONFIG_KEY: &'static str = "period";
+
+    fn name(self) -> &'static str {
+        match self {
+            PeriodField::Url => "url",
+            PeriodField::Date => "date",
+            PeriodField::Begin => "begin",
+            PeriodField::End => "end",
+            PeriodField::Open => "open",
+            PeriodField::Closed => "closed",
+        }
+    }
+
+    fn letter(self) -> char {
+        match self {
+            PeriodField::Url => 'u',
+            PeriodField::Date => 'd',
+            PeriodField::Begin => 'b',
+            PeriodField::End => 'e',
+            PeriodField::Open => 'o',
+            PeriodField::Closed => 'c',
+        }
+    }
+
+    fn configured_spec(fields_config: &FieldsConfig) -> Option<&FieldSpec> {
+        fields_config.period.as_ref()
+    }
+}
+
+/// One repo's issue counts for one period. `closed` means created in the
+/// period and closed *now*, not closed during the period.
+struct PeriodRow<'a> {
+    repo: &'a str,
+    begin: NaiveDate,
+    end: NaiveDate,
+    open: u64,
+    closed: u64,
+}
 
 /// Fetches every issue created in `span_begin..span_end` across all
 /// repos in a single (paginated) search, warning when the combined result
@@ -43,6 +104,7 @@ fn fetch_span(
 /// period the repos in the order given.
 fn print_rows(
     ctx: &Ctx,
+    columns: &[Column<PeriodField>],
     items: &[Value],
     mut periods: Vec<(NaiveDate, NaiveDate)>,
     chronological: bool,
@@ -53,7 +115,8 @@ fn print_rows(
     for (begin, end) in periods {
         for repo in &ctx.repos {
             let (open, closed) = counts_in_range(items, repo, begin, end);
-            print_period_row(ctx, repo, begin, end, open, closed);
+            let row = PeriodRow { repo, begin, end, open, closed };
+            print_period_row(ctx, columns, &row);
         }
     }
 }
@@ -81,25 +144,39 @@ fn counts_in_range(items: &[Value], repo: &str, begin: NaiveDate, end: NaiveDate
     (open, closed)
 }
 
-fn print_period_row(
-    ctx: &Ctx,
-    repo: &str,
-    begin: NaiveDate,
-    end: NaiveDate,
-    open: u64,
-    closed: u64,
-) {
-    let today = ctx.today;
-    let link_target =
+fn print_period_row(ctx: &Ctx, columns: &[Column<PeriodField>], row: &PeriodRow) {
+    let cells: Vec<Cell> = columns
+        .iter()
+        .map(|column| match column {
+            Column::Blank => Cell::empty(),
+            Column::Field(field) => Cell::plain(period_cell_text(ctx, *field, row)),
+        })
+        .collect();
+    emit_cells(&cells, false);
+}
+
+fn period_cell_text(ctx: &Ctx, field: PeriodField, row: &PeriodRow) -> String {
+    match field {
+        PeriodField::Url => period_link(ctx, row),
+        PeriodField::Date => ctx.today.to_string(),
+        PeriodField::Begin => row.begin.to_string(),
+        PeriodField::End => row.end.to_string(),
+        PeriodField::Open => row.open.to_string(),
+        PeriodField::Closed => row.closed.to_string(),
+    }
+}
+
+/// The period's GitHub issue search, labelled `begin..end` — prefixed with
+/// the repo when several are listed, since a markdown/hyperlink label
+/// otherwise wouldn't say which repo the row is for.
+fn period_link(ctx: &Ctx, row: &PeriodRow) -> String {
+    let PeriodRow { repo, begin, end, .. } = row;
+    let search_url =
         format!("https://github.com/{repo}/issues?q=is%3Aissue%20created%3A{begin}..{end}");
-    // With several repos the plain url still names its repo, but a
-    // markdown/hyperlink label wouldn't, so prefix it there.
     let label = if ctx.repos.len() > 1 {
         format!("{repo} {begin}..{end}")
     } else {
         format!("{begin}..{end}")
     };
-    let url = ctx.link_style.format(&label, &link_target);
-
-    emit(&format!("{url}\t{today}\t{begin}\t{end}\t{open}\t{closed}"));
+    ctx.link_style.format(&label, &search_url)
 }

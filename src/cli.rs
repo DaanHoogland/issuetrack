@@ -72,6 +72,16 @@ pub struct Cli {
     #[arg(short = 'y', long, global = true)]
     pub copy: bool,
 
+    /// Output columns, in order: comma-separated field names
+    /// (`url,comment,blank,action`) or one letter per column (`uc_a`).
+    /// `blank` (`_`) inserts an empty column. Fields for `individual`: url
+    /// (u), comment (c), user (r), opened (o), action (a). Fields for
+    /// weekly/monthly/yearly: url (u), date (d), begin (b), end (e), open
+    /// (o), closed (c). Overrides `[fields]` in config.toml; defaults to all
+    /// fields in the order listed.
+    #[arg(short = 'f', long, global = true)]
+    pub fields: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 

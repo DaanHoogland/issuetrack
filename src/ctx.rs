@@ -1,6 +1,8 @@
+use anyhow::Result;
 use chrono::NaiveDate;
 use std::path::PathBuf;
 
+use crate::fields::{Column, Field, FieldsConfig, resolve_columns};
 use crate::output::LinkStyle;
 
 /// Run-wide settings, resolved once in `main` from the command line and
@@ -14,10 +16,16 @@ pub struct Ctx {
     pub link_style: LinkStyle,
     /// Whether --copy is active (output also goes to the clipboard).
     pub copy: bool,
+    pub command_line_fields: Option<String>,
+    pub configured_fields: FieldsConfig,
 }
 
 impl Ctx {
     pub fn token(&self) -> Option<&str> {
         self.token.as_deref()
+    }
+
+    pub fn columns<F: Field>(&self) -> Result<Vec<Column<F>>> {
+        resolve_columns(self.command_line_fields.as_deref(), &self.configured_fields)
     }
 }

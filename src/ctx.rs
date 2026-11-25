@@ -12,6 +12,8 @@ pub struct Ctx {
     pub today: NaiveDate,
     pub token: Option<String>,
     pub link_style: LinkStyle,
+    /// Whether --copy is active (output also goes to the clipboard).
+    pub copy: bool,
 }
 
 impl Ctx {

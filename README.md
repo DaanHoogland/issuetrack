@@ -30,11 +30,37 @@ issuetrack individual
 Prints one TSV row per new issue opened by a non-ShapeBlue, non-bot author:
 
 ```
-url    title    author-profile-url    opened-date    (blank status)    (blank action)
+url    title    author-profile-url    opened-date    action (linked PRs)
 ```
 
-The status and action columns are left blank for you to fill in by hand, same
-as today. Paste the rows in under the existing header, newest first.
+These line up with the sheet's columns A–E (url, comment, user, opened,
+action). The symbol column F is left for you to fill in by hand. Paste the
+rows in under the existing header, newest first.
+
+The action column lists the pull requests linked to the issue, separated by
+`; ` when there are several:
+
+- `PR by <login>: #<number>` — a PR set to close the issue (a closing
+  keyword like "fixes #N", or linked in the issue's Development sidebar).
+- `mentioned in #<number>` — a PR that only references the issue. Worth a
+  look: it may solve the issue without being linked as such.
+
+PRs in another repo show as `owner/name#<number>`. Issues with no linked or
+mentioning PR show `no code yet`.
+
+The PR column is always one cell, so every row has the same 5 columns.
+With `--markdown-url` each PR id becomes a markdown link to its PR
+(`PR by jmsperu: [#14815](…)`).
+
+With `--hyperlink-url`, an issue with one PR gets a `=HYPERLINK()` formula.
+A formula can link only one url, though, so for an issue with several PRs
+the printed cell is plain text (a note on stderr says how many rows that
+hit). To get every PR linked, add `--copy`: alongside the TSV, the clipboard
+then also gets an HTML table of the same rows, which Google Sheets prefers
+on paste. In it each PR id is its own link inside the one cell (rich text,
+like a cell edited by hand), and the reporter column is a plain link rather
+than a formula. The lookup is one GraphQL call per 50 listed issues, so it
+doesn't count against the search API's rate limit.
 
 Defaults to picking up from the last run (tracked in
 `~/.config/issuetrack/state.json`) through today; first run defaults to the

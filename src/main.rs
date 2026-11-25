@@ -19,7 +19,7 @@ use dates::{
     last_completed_week, parse_slash_date, resolve_implicit, resolve_month, resolve_period,
     resolve_year,
 };
-use output::{COPY_BUFFER, LinkStyle, copy_to_clipboard};
+use output::{COPY_BUFFER, LinkStyle, copy_rich_to_clipboard, copy_to_clipboard};
 use repos::resolve_repos;
 
 fn main() -> Result<()> {
@@ -46,20 +46,25 @@ fn main() -> Result<()> {
         today,
         token,
         link_style,
+        copy: cli.copy,
     };
 
     let copy = cli.copy;
     if copy {
-        COPY_BUFFER.with(|b| *b.borrow_mut() = Some(String::new()));
+        COPY_BUFFER.with(|b| *b.borrow_mut() = Some(Default::default()));
     }
 
     let result = run(cli, &ctx);
 
     if copy {
         let buf = COPY_BUFFER.with(|b| b.borrow_mut().take()).unwrap_or_default();
-        if !buf.is_empty() {
-            copy_to_clipboard(&buf)?;
-            eprintln!("copied {} row(s) to the clipboard", buf.lines().count());
+        if !buf.text.is_empty() {
+            if buf.rich {
+                copy_rich_to_clipboard(&buf.text, &buf.html_rows)?;
+            } else {
+                copy_to_clipboard(&buf.text)?;
+            }
+            eprintln!("copied {} row(s) to the clipboard", buf.text.lines().count());
         }
     }
 

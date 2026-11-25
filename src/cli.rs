@@ -102,7 +102,8 @@ pub struct PeriodOverride {
 #[derive(Subcommand)]
 pub enum Command {
     /// TSV rows (url, title, user profile url, opened date) for new external-party issues,
-    /// for the ACSissues tab. Blank status/action columns are left for you to fill in.
+    /// for the ACSissues tab, followed by the action column listing linked PRs (`PR by <login>: #<number>` for closing PRs,
+    /// `mentioned in #<number>` for PRs that only reference the issue, or `no code yet`).
     Individual {
         /// Start date (YYYY-MM-DD). Defaults to the last recorded run, or 7 days ago.
         #[arg(short = 's', long)]

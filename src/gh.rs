@@ -110,3 +110,121 @@ pub fn user_full_name(login: &str, token: Option<&str>) -> Result<Option<String>
         .filter(|n| !n.is_empty())
         .map(str::to_string))
 }
+
+/// A pull request linked to an issue.
+pub struct LinkedPr {
+    /// `owner/name` of the repo the PR lives in.
+    pub repo: String,
+    pub number: u64,
+    pub url: String,
+    /// The PR author's login (`ghost` for deleted accounts).
+    pub author: String,
+    /// Whether the PR is set to close the issue (a closing keyword or a
+    /// Development-sidebar link), as opposed to only mentioning it.
+    pub closing: bool,
+}
+
+/// Pull requests linked to each of the given issues, keyed by the issue's
+/// GraphQL `node_id` (as found on search items). An issue's list holds the
+/// PRs set to close it (a "fixes #N" keyword or a manual link in the
+/// Development sidebar) first, then any other PR that cross-references it,
+/// without duplicates. Issues with no linked PR map to an empty list.
+///
+/// Uses GraphQL `nodes(ids: ...)` in batches of 50, so a run costs one call
+/// per 50 issues instead of one search per issue — the search API's
+/// ~30 req/min cap would trip on a per-issue loop.
+pub fn linked_prs(
+    node_ids: &[&str],
+    token: Option<&str>,
+) -> Result<std::collections::HashMap<String, Vec<LinkedPr>>> {
+    let mut out = std::collections::HashMap::new();
+    for chunk in node_ids.chunks(50) {
+        let ids = chunk
+            .iter()
+            .map(|id| serde_json::to_string(id).expect("string serializes"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let query = format!(
+            "query {{ nodes(ids: [{ids}]) {{ ... on Issue {{ id \
+             closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {{ nodes {{ ...pr }} }} \
+             timelineItems(first: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {{ nodes {{ \
+               ... on CrossReferencedEvent {{ source {{ ... on PullRequest {{ ...pr }} }} }} \
+               ... on ConnectedEvent {{ subject {{ ... on PullRequest {{ ...pr }} }} }} \
+             }} }} }} }} }} \
+             fragment pr on PullRequest {{ number url author {{ login }} repository {{ nameWithOwner }} }}"
+        );
+
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", "graphql", "-f", &format!("query={query}")]);
+        if let Some(t) = token {
+            cmd.env("GH_TOKEN", t);
+        }
+        let output = cmd
+            .output()
+            .context("failed to run `gh api` — is the gh CLI installed and on PATH?")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "gh api graphql (linked PRs) failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let v: Value = serde_json::from_slice(&output.stdout)
+            .context("failed to parse gh api graphql JSON output")?;
+
+        let nodes = v
+            .pointer("/data/nodes")
+            .and_then(|n| n.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for node in &nodes {
+            let Some(id) = node.get("id").and_then(|i| i.as_str()) else {
+                continue;
+            };
+            let closing = node
+                .pointer("/closedByPullRequestsReferences/nodes")
+                .and_then(|n| n.as_array())
+                .into_iter()
+                .flatten()
+                .map(|pr| (pr, true));
+            let referencing = node
+                .pointer("/timelineItems/nodes")
+                .and_then(|n| n.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|ev| ev.get("source").or_else(|| ev.get("subject")))
+                .map(|pr| (pr, false));
+
+            let mut prs: Vec<LinkedPr> = Vec::new();
+            for (pr, closing) in closing.chain(referencing) {
+                // Closing PRs come first, so a PR that both closes and
+                // mentions the issue keeps `closing: true`.
+                // Non-PR sources (issues cross-referencing this one) come
+                // back as empty objects.
+                let Some(number) = pr.get("number").and_then(|n| n.as_u64()) else {
+                    continue;
+                };
+                let repo = pr
+                    .pointer("/repository/nameWithOwner")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if prs.iter().any(|p| p.number == number && p.repo == repo) {
+                    continue;
+                }
+                let url = pr
+                    .get("url")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let author = pr
+                    .pointer("/author/login")
+                    .and_then(|l| l.as_str())
+                    .unwrap_or("ghost")
+                    .to_string();
+                prs.push(LinkedPr { repo, number, url, author, closing });
+            }
+            out.insert(id.to_string(), prs);
+        }
+    }
+    Ok(out)
+}

@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod ctx;
 mod dates;
+mod fields;
 mod gh;
 mod individual;
 mod output;
@@ -47,6 +48,8 @@ fn main() -> Result<()> {
         token,
         link_style,
         copy: cli.copy,
+        command_line_fields: cli.fields.clone(),
+        configured_fields: file_defaults.fields.clone(),
     };
 
     let copy = cli.copy;
@@ -59,7 +62,7 @@ fn main() -> Result<()> {
     if copy {
         let buf = COPY_BUFFER.with(|b| b.borrow_mut().take()).unwrap_or_default();
         if !buf.text.is_empty() {
-            if buf.rich {
+            if buf.needs_html {
                 copy_rich_to_clipboard(&buf.text, &buf.html_rows)?;
             } else {
                 copy_to_clipboard(&buf.text)?;

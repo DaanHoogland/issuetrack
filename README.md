@@ -171,6 +171,43 @@ The `-N` back-offset forms and `--since`/`--until` overrides still need the
 explicit subcommand, since a bare `-3` alone is ambiguous between months and
 years back.
 
+### Choosing output columns
+
+Both `individual` and the period commands print a fixed default set of
+columns, but you can pick which ones appear, in what order, and where empty
+columns go — e.g. to skip a sheet column you fill in by hand.
+
+| Command | Fields (letter) — default order |
+|---|---|
+| `individual` | `url` (u), `comment` (c), `user` (r), `opened` (o), `action` (a) |
+| `weekly` / `monthly` / `yearly` | `url` (u), `date` (d), `begin` (b), `end` (e), `open` (o), `closed` (c) |
+
+`blank` (letter `_`) inserts an empty column, and can be used any number of
+times. A field can also be repeated or left out.
+
+Per run, with `--fields`/`-f`: either comma-separated names, or one letter
+per column:
+
+```
+issuetrack -f url,comment,blank,action individual
+issuetrack -f uc_a individual          # same thing
+issuetrack -f b_eoc weekly             # begin, (empty), end, open, closed
+```
+
+As a default, in `config.toml` (an array of names, or one string in
+`--fields` syntax; `--fields` overrides it):
+
+```toml
+[fields]
+individual = ["url", "comment", "user", "opened", "action"]
+period = "udbeoc"
+```
+
+An unknown name or letter is an error that lists the valid ones for that
+command; it's reported before any GitHub calls. `individual` also skips the
+lookups behind columns that aren't shown: no PR lookup without `action`, no
+full-name lookups (`--full-username`) without `user`.
+
 ## Notes
 
 - Uses the GitHub search API (`is:issue`, so PRs are excluded automatically).
@@ -245,6 +282,7 @@ Apply to every subcommand (and to the implicit month/year shortcut).
 | `--hyperlink-url` | `-H` | Format url columns as Google Sheets formulas instead: `=HYPERLINK(url, "begin..end")` / `=HYPERLINK(url, "login")` — paste straight into a sheet cell. Mutually exclusive with `--markdown-url` |
 | `--hyperlink-separator <CHAR>` | `-P` | Single literal character to use as the argument separator inside `=HYPERLINK()` formulas (only matters with `--hyperlink-url`); default `,` — e.g. `-P ';'` |
 | `--copy` | `-y` | Copy the output to the clipboard (macOS `pbcopy`) instead of relying on selecting it from the terminal — see [Pasting into Sheets](#pasting-into-sheets) below |
+| `--fields <SPEC>` | `-f` | Output columns, in order: field names comma-separated (`url,comment,blank,action`) or one letter per column (`uc_a`); `blank`/`_` is an empty column. Overrides `[fields]` in `config.toml` — see [Choosing output columns](#choosing-output-columns) |
 | `--help` | `-h` | Print help |
 | `--version` | `-V` | Print version |
 

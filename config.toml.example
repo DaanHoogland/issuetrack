@@ -42,3 +42,16 @@ extra_bots = [
 # a markdown link. Also settable per run with --hyperlink-url. Mutually
 # exclusive with markdown_url.
 # hyperlink_url = false
+
+# Output columns, in order, per command. Each entry is either an array of
+# field names or one string in --fields syntax: comma-separated names, or
+# one letter per column. "blank" (letter _) inserts an empty column.
+# Overridden by --fields on the command line. Defaults are shown.
+#
+#   individual: url (u), comment (c), user (r), opened (o), action (a)
+#   period (weekly/monthly/yearly): url (u), date (d), begin (b), end (e),
+#                                   open (o), closed (c)
+#
+# [fields]
+# individual = ["url", "comment", "user", "opened", "action"]
+# period = "udbeoc"

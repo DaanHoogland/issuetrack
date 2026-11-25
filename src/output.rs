@@ -24,17 +24,38 @@ impl LinkStyle {
 
 /// What `--copy` collects while a command runs: the TSV text, and an HTML
 /// table of the same rows. The HTML only goes on the clipboard when some row
-/// needed it (`rich`) — for a cell with several links, which a TSV cell (one
+/// asked for it — for a cell with several links, which a TSV cell (one
 /// `=HYPERLINK()` formula at most) can't express but a pasted HTML cell can.
 #[derive(Default)]
 pub struct CopyBuffer {
     pub text: String,
     pub html_rows: String,
-    pub rich: bool,
+    pub needs_html: bool,
 }
 
 thread_local! {
     pub static COPY_BUFFER: std::cell::RefCell<Option<CopyBuffer>> = const { std::cell::RefCell::new(None) };
+}
+
+/// One output cell: its TSV text, and its HTML for the `--copy` clipboard
+/// table.
+pub struct Cell {
+    pub text: String,
+    pub html: String,
+}
+
+impl Cell {
+    pub fn plain(text: impl Into<String>) -> Cell {
+        let text = text.into();
+        Cell {
+            html: html_escape(&text),
+            text,
+        }
+    }
+
+    pub fn empty() -> Cell {
+        Cell::plain("")
+    }
 }
 
 /// Escapes text for use inside HTML element content or a quoted attribute.
@@ -45,33 +66,29 @@ pub fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Prints a data row to stdout, and — when `--copy` is active — also appends
-/// it to the in-memory buffer that gets flushed to the clipboard at the end
-/// of `main`, so both `--copy` and plain stdout output stay available.
-pub fn emit(line: &str) {
-    let html_cells = line
-        .split('\t')
-        .map(|c| format!("<td>{}</td>", html_escape(c)))
-        .collect::<String>();
-    push(line, &html_cells, false);
-}
-
-/// Like `emit`, but with the clipboard's HTML version of the row given
-/// explicitly as `<td>` cells, and marking the clipboard as needing HTML.
-pub fn emit_rich(line: &str, html_cells: &str) {
-    push(line, html_cells, true);
-}
-
-fn push(line: &str, html_cells: &str, rich: bool) {
+/// Prints a row of cells to stdout as TSV, and — when `--copy` is active —
+/// also adds it to the buffer `main` flushes to the clipboard at the end.
+/// `clipboard_needs_html` puts the HTML version of the rows on the clipboard
+/// too, for cells whose links only survive as HTML.
+pub fn emit_cells(cells: &[Cell], clipboard_needs_html: bool) {
+    let line = cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\t");
     println!("{line}");
-    COPY_BUFFER.with(|b| {
-        if let Some(buf) = b.borrow_mut().as_mut() {
-            buf.text.push_str(line);
-            buf.text.push('\n');
-            buf.html_rows.push_str("<tr>");
-            buf.html_rows.push_str(html_cells);
-            buf.html_rows.push_str("</tr>");
-            buf.rich |= rich;
+    COPY_BUFFER.with(|buffer| {
+        if let Some(buffer) = buffer.borrow_mut().as_mut() {
+            buffer.text.push_str(&line);
+            buffer.text.push('\n');
+            buffer.html_rows.push_str("<tr>");
+            for cell in cells {
+                buffer.html_rows.push_str("<td>");
+                buffer.html_rows.push_str(&cell.html);
+                buffer.html_rows.push_str("</td>");
+            }
+            buffer.html_rows.push_str("</tr>");
+            buffer.needs_html |= clipboard_needs_html;
         }
     });
 }

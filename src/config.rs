@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+use crate::fields::FieldsConfig;
+
 /// Default argument separator for `=HYPERLINK()` formulas. Google Sheets
 /// picks this per document locale: English-like locales use `,`; locales
 /// with a comma decimal separator (Dutch, German, French, ...) require `;`
@@ -28,6 +30,8 @@ pub struct Config {
     pub hyperlink_url: bool,
     #[serde(default = "default_hyperlink_separator", alias = "hyperlink-separator")]
     pub hyperlink_separator: char,
+    #[serde(default)]
+    pub fields: FieldsConfig,
 }
 
 impl Default for Config {
@@ -40,6 +44,7 @@ impl Default for Config {
             markdown_url: false,
             hyperlink_url: false,
             hyperlink_separator: default_hyperlink_separator(),
+            fields: FieldsConfig::default(),
         }
     }
 }
@@ -83,7 +88,7 @@ pub fn default_path() -> PathBuf {
 }
 
 /// Reads the config file for its optional defaults (`repos`, `github_token`,
-/// `markdown_url`, `hyperlink_url`, `hyperlink_separator`), falling back to
+/// `markdown_url`, `hyperlink_url`, `hyperlink_separator`, `[fields]`), falling back to
 /// `Config::default()` if the file is missing or unreadable. Unlike
 /// `Config::load`, that's not an error here — most commands don't require a
 /// config file at all.
@@ -133,6 +138,19 @@ extra_bots = [
 # instead. Also settable per run with --hyperlink-separator. Only matters
 # with hyperlink_url.
 # hyperlink_separator = ","
+
+# Output columns, in order, per command. Each entry is either an array of
+# field names or one string in --fields syntax: comma-separated names, or
+# one letter per column. "blank" (letter _) inserts an empty column.
+# Overridden by --fields on the command line. Defaults are shown.
+#
+#   individual: url (u), comment (c), user (r), opened (o), action (a)
+#   period (weekly/monthly/yearly): url (u), date (d), begin (b), end (e),
+#                                   open (o), closed (c)
+#
+# [fields]
+# individual = ["url", "comment", "user", "opened", "action"]
+# period = "udbeoc"
 "#;
 
 pub fn init_config(path: &PathBuf) -> Result<()> {

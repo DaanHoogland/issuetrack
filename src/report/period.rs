@@ -1,8 +1,9 @@
 use anyhow::Result;
 use chrono::{Datelike, Duration, NaiveDate};
 
-use super::{fetch_span, print_period_row, print_rows};
+use super::{PeriodField, PeriodRow, fetch_span, print_period_row, print_rows};
 use crate::ctx::Ctx;
+use crate::fields::Column;
 use crate::dates::{
     check_range, last_completed_week, last_day_of_month, month_containing, next_month,
     week_containing,
@@ -17,6 +18,7 @@ const BARE_NUMBER_HINT: &str = " — a bare number is interpreted as \"N months/
 /// Prints one weekly row per completed Wednesday-through-Tuesday week, from
 /// the week containing `since_date` through the most recently completed week.
 pub fn run_weekly_since(ctx: &Ctx, since_date: NaiveDate, chronological: bool) -> Result<()> {
+    let columns = ctx.columns::<PeriodField>()?;
     let today = ctx.today;
     let (_, last_end) = last_completed_week(today);
     let (span_begin, _) = week_containing(since_date);
@@ -24,7 +26,7 @@ pub fn run_weekly_since(ctx: &Ctx, since_date: NaiveDate, chronological: bool) -
         eprintln!("no completed weeks between {since_date} and {today}");
         return Ok(());
     }
-    weekly_rows(ctx, span_begin, last_end, chronological)
+    weekly_rows(ctx, &columns, span_begin, last_end, chronological)
 }
 
 /// Prints one weekly row per Wednesday-through-Tuesday week overlapping
@@ -37,10 +39,11 @@ pub fn run_weekly_period(
     end: NaiveDate,
     chronological: bool,
 ) -> Result<()> {
+    let columns = ctx.columns::<PeriodField>()?;
     check_range(begin, end, ctx.today, "")?;
     let (span_begin, _) = week_containing(begin);
     let (_, span_end) = week_containing(end);
-    weekly_rows(ctx, span_begin, span_end, chronological)
+    weekly_rows(ctx, &columns, span_begin, span_end, chronological)
 }
 
 /// Prints one row per completed Wednesday-through-Tuesday week from
@@ -51,6 +54,7 @@ pub fn run_weekly_period(
 /// newest-first by default; pass `chronological` to print oldest-first.
 fn weekly_rows(
     ctx: &Ctx,
+    columns: &[Column<PeriodField>],
     span_begin: NaiveDate,
     span_end: NaiveDate,
     chronological: bool,
@@ -64,7 +68,7 @@ fn weekly_rows(
         begin += Duration::days(7);
         end += Duration::days(7);
     }
-    print_rows(ctx, &items, weeks, chronological);
+    print_rows(ctx, columns, &items, weeks, chronological);
     Ok(())
 }
 
@@ -72,6 +76,7 @@ fn weekly_rows(
 /// per repo (a combined query can't split counts by repo). `closed` means
 /// created in the window and closed *now*, not closed during the window.
 pub fn run_period(ctx: &Ctx, begin: NaiveDate, end: NaiveDate) -> Result<()> {
+    let columns = ctx.columns::<PeriodField>()?;
     check_range(begin, end, ctx.today, BARE_NUMBER_HINT)?;
 
     for repo in &ctx.repos {
@@ -80,7 +85,8 @@ pub fn run_period(ctx: &Ctx, begin: NaiveDate, end: NaiveDate) -> Result<()> {
 
         let open = gh::total_count(&open_q, ctx.token())?;
         let closed = gh::total_count(&closed_q, ctx.token())?;
-        print_period_row(ctx, repo, begin, end, open, closed);
+        let row = PeriodRow { repo, begin, end, open, closed };
+        print_period_row(ctx, &columns, &row);
     }
 
     Ok(())
@@ -95,6 +101,7 @@ pub fn run_monthly_period(
     end: NaiveDate,
     chronological: bool,
 ) -> Result<()> {
+    let columns = ctx.columns::<PeriodField>()?;
     check_range(begin, end, ctx.today, BARE_NUMBER_HINT)?;
     let (span_begin, _) = month_containing(begin);
     let (_, span_end) = month_containing(end);
@@ -114,7 +121,7 @@ pub fn run_monthly_period(
         }
         (year, month) = next_month(year, month);
     }
-    print_rows(ctx, &items, months, chronological);
+    print_rows(ctx, &columns, &items, months, chronological);
     Ok(())
 }
 
@@ -127,6 +134,7 @@ pub fn run_yearly_period(
     end: NaiveDate,
     chronological: bool,
 ) -> Result<()> {
+    let columns = ctx.columns::<PeriodField>()?;
     check_range(begin, end, ctx.today, BARE_NUMBER_HINT)?;
     let span_begin_year = begin.year();
     let span_end_year = end.year();
@@ -141,6 +149,6 @@ pub fn run_yearly_period(
         let year_end = NaiveDate::from_ymd_opt(year, 12, 31).expect("valid Dec 31 date");
         years.push((year_begin, year_end));
     }
-    print_rows(ctx, &items, years, chronological);
+    print_rows(ctx, &columns, &items, years, chronological);
     Ok(())
 }

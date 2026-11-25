@@ -3,11 +3,11 @@ use chrono::{Datelike, Duration, NaiveDate};
 
 use super::{PeriodField, PeriodRow, fetch_span, print_period_row, print_rows};
 use crate::ctx::Ctx;
-use crate::fields::Column;
 use crate::dates::{
-    check_range, last_completed_week, last_day_of_month, month_containing, next_month,
-    week_containing,
+    calendar_year, check_range, last_completed_week, last_day_of_month, month_containing,
+    next_month, week_containing,
 };
+use crate::fields::Column;
 use crate::gh;
 
 /// Appended to the out-of-range error for periods resolved from monthly/yearly
@@ -46,12 +46,8 @@ pub fn run_weekly_period(
     weekly_rows(ctx, &columns, span_begin, span_end, chronological)
 }
 
-/// Prints one row per completed Wednesday-through-Tuesday week from
-/// `span_begin` through `span_end` (both assumed already week-aligned),
-/// fetching every matching issue for the whole span in a single (paginated)
-/// search rather than one search per week — the search API's own rate limit
-/// is easy to trip otherwise on a multi-week backfill. Rows print
-/// newest-first by default; pass `chronological` to print oldest-first.
+/// Prints one row per Wednesday-through-Tuesday week from the week-aligned
+/// `span_begin` through `span_end`.
 fn weekly_rows(
     ctx: &Ctx,
     columns: &[Column<PeriodField>],
@@ -85,7 +81,13 @@ pub fn run_period(ctx: &Ctx, begin: NaiveDate, end: NaiveDate) -> Result<()> {
 
         let open = gh::total_count(&open_q, ctx.token())?;
         let closed = gh::total_count(&closed_q, ctx.token())?;
-        let row = PeriodRow { repo, begin, end, open, closed };
+        let row = PeriodRow {
+            repo,
+            begin,
+            end,
+            open,
+            closed,
+        };
         print_period_row(ctx, &columns, &row);
     }
 
@@ -136,19 +138,10 @@ pub fn run_yearly_period(
 ) -> Result<()> {
     let columns = ctx.columns::<PeriodField>()?;
     check_range(begin, end, ctx.today, BARE_NUMBER_HINT)?;
-    let span_begin_year = begin.year();
-    let span_end_year = end.year();
-    let span_begin = NaiveDate::from_ymd_opt(span_begin_year, 1, 1).expect("valid Jan 1 date");
-    let span_end = NaiveDate::from_ymd_opt(span_end_year, 12, 31).expect("valid Dec 31 date");
-
+    let (span_begin, _) = calendar_year(begin.year());
+    let (_, span_end) = calendar_year(end.year());
     let items = fetch_span(ctx, span_begin, span_end, "years")?;
-
-    let mut years = Vec::new();
-    for year in span_begin_year..=span_end_year {
-        let year_begin = NaiveDate::from_ymd_opt(year, 1, 1).expect("valid Jan 1 date");
-        let year_end = NaiveDate::from_ymd_opt(year, 12, 31).expect("valid Dec 31 date");
-        years.push((year_begin, year_end));
-    }
+    let years = (begin.year()..=end.year()).map(calendar_year).collect();
     print_rows(ctx, &columns, &items, years, chronological);
     Ok(())
 }

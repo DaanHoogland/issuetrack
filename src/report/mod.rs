@@ -74,26 +74,26 @@ struct PeriodRow<'a> {
     closed: u64,
 }
 
-/// Fetches every issue created in `span_begin..span_end` across all
-/// repos in a single (paginated) search, warning when the combined result
-/// hits the search API's 1000-result cap. `unit` names the sub-periods the
-/// caller will bucket into, for the warning text.
+/// Fetches every issue created in `span_begin..span_end` across all repos in
+/// one (paginated) search, to be counted per period locally — one search per
+/// period would trip the search API's rate limit on a backfill.
 fn fetch_span(
     ctx: &Ctx,
     span_begin: NaiveDate,
     span_end: NaiveDate,
-    unit: &str,
+    period_unit_plural: &str,
 ) -> Result<Vec<Value>> {
     let query = format!(
         "{} is:issue created:{span_begin}..{span_end}",
         repo_qualifiers(&ctx.repos)
     );
     let items = gh::all_items(&query, ctx.token())?;
-    if items.len() >= 1000 {
+    if items.len() >= gh::SEARCH_RESULT_CAP {
         eprintln!(
-            "warning: {span_begin}..{span_end} hit the search API's 1000-result cap — \
-             some {unit}' counts may be undercounted; narrow the range (or the repo list) \
-             if needed"
+            "warning: {span_begin}..{span_end} hit the search API's {}-result cap — \
+             some {period_unit_plural}' counts may be undercounted; narrow the range (or the \
+             repo list) if needed",
+            gh::SEARCH_RESULT_CAP
         );
     }
     Ok(items)
@@ -115,7 +115,13 @@ fn print_rows(
     for (begin, end) in periods {
         for repo in &ctx.repos {
             let (open, closed) = counts_in_range(items, repo, begin, end);
-            let row = PeriodRow { repo, begin, end, open, closed };
+            let row = PeriodRow {
+                repo,
+                begin,
+                end,
+                open,
+                closed,
+            };
             print_period_row(ctx, columns, &row);
         }
     }
@@ -126,16 +132,12 @@ fn print_rows(
 fn counts_in_range(items: &[Value], repo: &str, begin: NaiveDate, end: NaiveDate) -> (u64, u64) {
     let (mut open, mut closed) = (0u64, 0u64);
     for item in items {
-        if !item_repo(item).eq_ignore_ascii_case(repo) {
+        let created_in_range =
+            gh::created_date(item).is_some_and(|created| (begin..=end).contains(&created));
+        if !created_in_range || !item_repo(item).eq_ignore_ascii_case(repo) {
             continue;
         }
-        let Some(created) = gh::created_date(item) else {
-            continue;
-        };
-        if created < begin || created > end {
-            continue;
-        }
-        match item.get("state").and_then(|v| v.as_str()) {
+        match item["state"].as_str() {
             Some("open") => open += 1,
             Some("closed") => closed += 1,
             _ => {}
@@ -170,7 +172,9 @@ fn period_cell_text(ctx: &Ctx, field: PeriodField, row: &PeriodRow) -> String {
 /// the repo when several are listed, since a markdown/hyperlink label
 /// otherwise wouldn't say which repo the row is for.
 fn period_link(ctx: &Ctx, row: &PeriodRow) -> String {
-    let PeriodRow { repo, begin, end, .. } = row;
+    let PeriodRow {
+        repo, begin, end, ..
+    } = row;
     let search_url =
         format!("https://github.com/{repo}/issues?q=is%3Aissue%20created%3A{begin}..{end}");
     let label = if ctx.repos.len() > 1 {

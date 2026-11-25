@@ -5,7 +5,9 @@ use std::path::PathBuf;
 /// double quote (which would break the formula's own quoting).
 fn parse_hyperlink_separator(s: &str) -> std::result::Result<char, String> {
     let mut chars = s.chars();
-    let c = chars.next().ok_or("must be a single character, not empty")?;
+    let c = chars
+        .next()
+        .ok_or("must be a single character, not empty")?;
     if chars.next().is_some() {
         return Err(format!("must be a single character, got '{s}'"));
     }
@@ -109,37 +111,43 @@ pub struct PeriodOverride {
     pub chronological: bool,
 }
 
+#[derive(clap::Args)]
+pub struct IndividualArgs {
+    /// Start date (YYYY-MM-DD). Defaults to the last recorded run, or 7 days ago.
+    #[arg(short = 's', long)]
+    pub since: Option<String>,
+    /// End date (YYYY-MM-DD). Defaults to today.
+    #[arg(short = 'u', long)]
+    pub until: Option<String>,
+    /// Don't read or update the state file.
+    #[arg(short = 'n', long)]
+    pub no_state: bool,
+    /// Print the reporter as their bare GitHub username instead of a
+    /// profile url (overrides --markdown-url/--hyperlink-url for that
+    /// column).
+    #[arg(short = 'U', long)]
+    pub username: bool,
+    /// Look up each reporter's full GitHub display name and show it
+    /// (instead of their login) wherever the reporter column has a
+    /// separate display text: as the link text with --markdown-url or
+    /// --hyperlink-url, or as the displayed name with --username. Falls
+    /// back to the login for accounts with no display name set, and has
+    /// no effect on the plain profile-url output (none of those flags given).
+    #[arg(short = 'F', long)]
+    pub full_username: bool,
+}
+
 #[derive(Subcommand)]
 pub enum Command {
-    /// TSV rows (url, title, user profile url, opened date) for new external-party issues,
-    /// for the ACSissues tab, followed by the action column listing linked PRs (`PR by <login>: #<number>` for closing PRs,
-    /// `mentioned in #<number>` for PRs that only reference the issue, or `no code yet`).
-    Individual {
-        /// Start date (YYYY-MM-DD). Defaults to the last recorded run, or 7 days ago.
-        #[arg(short = 's', long)]
-        since: Option<String>,
-        /// End date (YYYY-MM-DD). Defaults to today.
-        #[arg(short = 'u', long)]
-        until: Option<String>,
-        /// Don't read or update the state file.
-        #[arg(short = 'n', long)]
-        no_state: bool,
-        /// Print the reporter as their bare GitHub username instead of a
-        /// profile url (overrides --markdown-url/--hyperlink-url for that
-        /// column).
-        #[arg(short = 'U', long)]
-        username: bool,
-        /// Look up each reporter's full GitHub display name and show it
-        /// (instead of their login) wherever the reporter column has a
-        /// separate display text: as the link text with --markdown-url or
-        /// --hyperlink-url, or as the displayed name with --username. Falls
-        /// back to the login for accounts with no display name set, and has
-        /// no effect on the plain profile-url output (none of those flags given).
-        #[arg(short = 'F', long)]
-        full_username: bool,
-    },
-    /// One summary TSV row (begin, end, open, closed, total, date, duration,
-    /// url, rate) for the Weekly tab, covering the most recently completed
+    /// TSV rows of new external-party issues for the ACSissues tab: url,
+    /// title, reporter, opened date, and the linked PRs.
+    ///
+    /// The PR column shows `PR by <login>: #<number>` for PRs set to close
+    /// the issue, `mentioned in #<number>` for PRs that only reference it,
+    /// or `no code yet`.
+    Individual(IndividualArgs),
+    /// One summary TSV row per repo (url, date, begin, end, open, closed) for
+    /// the Weekly tab, covering the most recently completed
     /// Wednesday-through-Tuesday window.
     Weekly {
         #[command(flatten)]
@@ -171,8 +179,8 @@ pub enum Command {
         over: PeriodOverride,
         /// 0 = current year; negative = N years back (e.g. -3 = 3 years ago);
         /// positive = an absolute year, 2-digit (23 -> 2023) or 4-digit (2023).
-        #[arg(allow_hyphen_values = true, default_value_t = 0)]
-        n: i64,
+        #[arg(allow_hyphen_values = true, default_value_t = 0, value_name = "N")]
+        year_or_years_back: i64,
     },
     /// Write a starter config.toml if one doesn't already exist.
     InitConfig,

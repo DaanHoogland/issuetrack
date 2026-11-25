@@ -9,7 +9,11 @@ const DEFAULT_REPO: &str = "apache/cloudstack";
 /// qualifiers. Duplicates (case-insensitively) are dropped, keeping the
 /// first spelling.
 pub fn resolve_repos(cli_repos: &[String], config_repos: &[String]) -> Result<Vec<String>> {
-    let source = if !cli_repos.is_empty() { cli_repos } else { config_repos };
+    let source = if !cli_repos.is_empty() {
+        cli_repos
+    } else {
+        config_repos
+    };
     let mut repos: Vec<String> = Vec::new();
     for raw in source {
         let repo = raw.trim();
@@ -19,7 +23,9 @@ pub fn resolve_repos(cli_repos: &[String], config_repos: &[String]) -> Result<Ve
         let valid = repo.split('/').count() == 2
             && repo.split('/').all(|part| {
                 !part.is_empty()
-                    && part.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+                    && part
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
             });
         if !valid {
             anyhow::bail!("invalid repo '{repo}', expected owner/name (e.g. apache/cloudstack)");

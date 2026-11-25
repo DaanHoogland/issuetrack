@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -10,27 +10,21 @@ use crate::fields::FieldsConfig;
 /// instead, and reject a formula built with the wrong one.
 pub const DEFAULT_HYPERLINK_SEPARATOR: char = ',';
 
-fn default_hyperlink_separator() -> char {
-    DEFAULT_HYPERLINK_SEPARATOR
-}
-
+/// config.toml. Every setting is optional; missing ones take their
+/// `Default` value.
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct Config {
-    #[serde(default)]
     pub repos: Vec<String>,
-    #[serde(default)]
     pub excluded_users: Vec<String>,
-    #[serde(default)]
     pub extra_bots: Vec<String>,
-    #[serde(default)]
     pub github_token: Option<String>,
-    #[serde(default, alias = "markdown-url")]
+    #[serde(alias = "markdown-url")]
     pub markdown_url: bool,
-    #[serde(default, alias = "hyperlink-url")]
+    #[serde(alias = "hyperlink-url")]
     pub hyperlink_url: bool,
-    #[serde(default = "default_hyperlink_separator", alias = "hyperlink-separator")]
+    #[serde(alias = "hyperlink-separator")]
     pub hyperlink_separator: char,
-    #[serde(default)]
     pub fields: FieldsConfig,
 }
 
@@ -43,7 +37,7 @@ impl Default for Config {
             github_token: None,
             markdown_url: false,
             hyperlink_url: false,
-            hyperlink_separator: default_hyperlink_separator(),
+            hyperlink_separator: DEFAULT_HYPERLINK_SEPARATOR,
             fields: FieldsConfig::default(),
         }
     }
@@ -52,32 +46,26 @@ impl Default for Config {
 impl Config {
     pub fn load(path: &Path) -> Result<Config> {
         if !path.exists() {
-            anyhow::bail!(
+            bail!(
                 "config file not found at {}\nrun `issuetrack init-config` to create a starter one, then add ShapeBlue GitHub usernames to it",
                 path.display()
             );
         }
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config file {}", path.display()))?;
-        let cfg: Config = toml::from_str(&text)
-            .with_context(|| format!("parsing config file {}", path.display()))?;
-        Ok(cfg)
+        toml::from_str(&text).with_context(|| format!("parsing config file {}", path.display()))
     }
 
-    /// True if this GitHub login should be treated as an external contributor:
-    /// not a known bot and not in the excluded (ShapeBlue) list.
-    pub fn is_external(&self, login: &str) -> bool {
-        let lower = login.to_lowercase();
-        if lower.ends_with("[bot]") {
-            return false;
-        }
-        if self.extra_bots.iter().any(|b| b.to_lowercase() == lower) {
-            return false;
-        }
-        if self.excluded_users.iter().any(|u| u.to_lowercase() == lower) {
-            return false;
-        }
-        true
+    /// Not a bot (`[bot]` suffix or `extra_bots`) and not an excluded
+    /// (ShapeBlue) user.
+    pub fn is_external_contributor(&self, login: &str) -> bool {
+        let is_listed_in = |logins: &[String]| {
+            logins
+                .iter()
+                .any(|listed| listed.eq_ignore_ascii_case(login))
+        };
+        let is_bot = login.to_lowercase().ends_with("[bot]") || is_listed_in(&self.extra_bots);
+        !is_bot && !is_listed_in(&self.excluded_users)
     }
 }
 
@@ -155,7 +143,7 @@ extra_bots = [
 
 pub fn init_config(path: &PathBuf) -> Result<()> {
     if path.exists() {
-        anyhow::bail!(
+        bail!(
             "config file already exists at {} — edit it directly, refusing to overwrite",
             path.display()
         );
@@ -168,4 +156,32 @@ pub fn init_config(path: &PathBuf) -> Result<()> {
     println!("wrote starter config to {}", path.display());
     println!("edit it to add ShapeBlue GitHub usernames before running `individual`");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_settings_take_their_defaults() {
+        let config: Config = toml::from_str("repos = [\"a/b\"]").unwrap();
+        assert_eq!(config.repos, ["a/b"]);
+        assert_eq!(config.hyperlink_separator, DEFAULT_HYPERLINK_SEPARATOR);
+        assert!(config.fields.individual.is_none());
+    }
+
+    #[test]
+    fn the_starter_config_parses() {
+        assert!(toml::from_str::<Config>(STARTER).is_ok());
+    }
+
+    #[test]
+    fn bots_and_excluded_users_are_not_external() {
+        let config: Config =
+            toml::from_str("excluded_users = [\"DaanH\"]\nextra_bots = [\"ci-helper\"]").unwrap();
+        assert!(config.is_external_contributor("someone"));
+        assert!(!config.is_external_contributor("daanh"));
+        assert!(!config.is_external_contributor("CI-Helper"));
+        assert!(!config.is_external_contributor("dependabot[bot]"));
+    }
 }

@@ -1,230 +1,244 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::NaiveDate;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::process::Command;
 
-pub struct SearchResult {
-    pub total_count: u64,
-    pub items: Vec<Value>,
-}
+/// GitHub search returns at most this many results per query.
+pub const SEARCH_RESULT_CAP: usize = 1000;
+const SEARCH_PAGE_SIZE: u32 = 100;
+const SEARCH_MAX_PAGES: u32 = SEARCH_RESULT_CAP as u32 / SEARCH_PAGE_SIZE;
+const LINKED_PR_LOOKUP_BATCH_SIZE: usize = 50;
+const DELETED_ACCOUNT_LOGIN: &str = "ghost";
 
-fn search_issues(query: &str, page: u32, per_page: u32, token: Option<&str>) -> Result<SearchResult> {
-    let mut cmd = Command::new("gh");
-    cmd.args([
-        "api",
-        "-X",
-        "GET",
-        "search/issues",
-        "-f",
-        &format!("q={query}"),
-        "-f",
-        &format!("per_page={per_page}"),
-        "-f",
-        &format!("page={page}"),
-    ]);
-    if let Some(t) = token {
-        cmd.env("GH_TOKEN", t);
+/// Runs `gh api <args>` (as `token` when given, else `gh`'s own login) and
+/// parses its JSON output. `what` names the call in error messages.
+fn gh_api(args: &[&str], token: Option<&str>, what: &str) -> Result<Value> {
+    let mut command = Command::new("gh");
+    command.arg("api").args(args);
+    if let Some(token) = token {
+        command.env("GH_TOKEN", token);
     }
-    let output = cmd
+    let output = command
         .output()
         .context("failed to run `gh api` — is the gh CLI installed and on PATH?")?;
-
     if !output.status.success() {
-        anyhow::bail!(
-            "gh api search/issues failed: {}",
+        bail!(
+            "gh api {what} failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-
-    let v: Value =
-        serde_json::from_slice(&output.stdout).context("failed to parse gh api JSON output")?;
-
-    let total_count = v.get("total_count").and_then(|c| c.as_u64()).unwrap_or(0);
-    let items = v
-        .get("items")
-        .and_then(|i| i.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    Ok(SearchResult { total_count, items })
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("failed to parse gh api {what} JSON output"))
 }
 
-/// Total match count for a search query (GitHub search API caps this at 1000
-/// for actual item retrieval, but total_count itself is accurate).
+struct SearchPage {
+    total_count: u64,
+    items: Vec<Value>,
+}
+
+fn search_issues(
+    query: &str,
+    page: u32,
+    page_size: u32,
+    token: Option<&str>,
+) -> Result<SearchPage> {
+    let response = gh_api(
+        &[
+            "-X",
+            "GET",
+            "search/issues",
+            "-f",
+            &format!("q={query}"),
+            "-f",
+            &format!("per_page={page_size}"),
+            "-f",
+            &format!("page={page}"),
+        ],
+        token,
+        "search/issues",
+    )?;
+    Ok(SearchPage {
+        total_count: response["total_count"].as_u64().unwrap_or(0),
+        items: response["items"].as_array().cloned().unwrap_or_default(),
+    })
+}
+
+/// Total match count for a search query — accurate even past the 1000
+/// results search lets you retrieve.
 pub fn total_count(query: &str, token: Option<&str>) -> Result<u64> {
     Ok(search_issues(query, 1, 1, token)?.total_count)
 }
 
-/// All matching items for a search query, paginated up to GitHub search's
-/// 1000-result cap (10 pages of 100).
+/// All matching items for a search query, up to search's 1000-result cap.
 pub fn all_items(query: &str, token: Option<&str>) -> Result<Vec<Value>> {
     let mut items = Vec::new();
-    let per_page = 100;
-    let mut page = 1;
-    loop {
-        let res = search_issues(query, page, per_page, token)?;
-        let got = res.items.len() as u32;
-        let total = res.total_count;
-        items.extend(res.items);
-        if got < per_page || items.len() as u64 >= total || page >= 10 {
+    for page in 1..=SEARCH_MAX_PAGES {
+        let search_page = search_issues(query, page, SEARCH_PAGE_SIZE, token)?;
+        let last_page_reached = (search_page.items.len() as u32) < SEARCH_PAGE_SIZE;
+        items.extend(search_page.items);
+        if last_page_reached || items.len() as u64 >= search_page.total_count {
             break;
         }
-        page += 1;
     }
     Ok(items)
 }
 
 /// The date part of a search item's `created_at` timestamp
-/// (`2026-10-29T14:03:00Z` -> 2026-10-29), or `None` if it's missing or
-/// malformed.
+/// (`2026-10-29T14:03:00Z` -> 2026-10-29).
 pub fn created_date(item: &Value) -> Option<NaiveDate> {
-    let created_at = item.get("created_at")?.as_str()?;
-    let date_str = created_at.split('T').next().unwrap_or(created_at);
-    NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()
+    let created_at = item["created_at"].as_str()?;
+    let date_part = created_at.split('T').next().unwrap_or(created_at);
+    NaiveDate::parse_from_str(date_part, "%Y-%m-%d").ok()
 }
 
-/// A GitHub account's public display name (the "Name" field on its profile),
-/// e.g. "Jane Doe" for login "janedoe". `None` if the account has no display
-/// name set (common for accounts that only ever set a username).
+/// A GitHub account's public display name ("Jane Doe" for login
+/// "janedoe"), or `None` when the account has none set.
 pub fn user_full_name(login: &str, token: Option<&str>) -> Result<Option<String>> {
-    let mut cmd = Command::new("gh");
-    cmd.args(["api", &format!("users/{login}")]);
-    if let Some(t) = token {
-        cmd.env("GH_TOKEN", t);
-    }
-    let output = cmd
-        .output()
-        .context("failed to run `gh api` — is the gh CLI installed and on PATH?")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "gh api users/{login} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
-    let v: Value =
-        serde_json::from_slice(&output.stdout).context("failed to parse gh api JSON output")?;
-    Ok(v.get("name")
-        .and_then(|n| n.as_str())
-        .filter(|n| !n.is_empty())
+    let endpoint = format!("users/{login}");
+    let profile = gh_api(&[&endpoint], token, &endpoint)?;
+    Ok(profile["name"]
+        .as_str()
+        .filter(|name| !name.is_empty())
         .map(str::to_string))
 }
 
-/// A pull request linked to an issue.
 pub struct LinkedPr {
-    /// `owner/name` of the repo the PR lives in.
-    pub repo: String,
+    pub repo_owner_and_name: String,
     pub number: u64,
     pub url: String,
-    /// The PR author's login (`ghost` for deleted accounts).
-    pub author: String,
-    /// Whether the PR is set to close the issue (a closing keyword or a
-    /// Development-sidebar link), as opposed to only mentioning it.
-    pub closing: bool,
+    pub author_login: String,
+    /// Set to close the issue (a "fixes #N" keyword or a Development-sidebar
+    /// link), as opposed to only mentioning it.
+    pub closes_issue: bool,
 }
 
-/// Pull requests linked to each of the given issues, keyed by the issue's
-/// GraphQL `node_id` (as found on search items). An issue's list holds the
-/// PRs set to close it (a "fixes #N" keyword or a manual link in the
-/// Development sidebar) first, then any other PR that cross-references it,
-/// without duplicates. Issues with no linked PR map to an empty list.
+/// Pull requests linked to each issue, keyed by the issue's GraphQL
+/// `node_id` (as found on search items): first the PRs set to close it, then
+/// other PRs that mention it, without duplicates.
 ///
-/// Uses GraphQL `nodes(ids: ...)` in batches of 50, so a run costs one call
-/// per 50 issues instead of one search per issue — the search API's
-/// ~30 req/min cap would trip on a per-issue loop.
+/// Looks up `LINKED_PR_LOOKUP_BATCH_SIZE` issues per GraphQL call, which
+/// doesn't count against the search API's ~30 requests/minute limit.
 pub fn linked_prs(
-    node_ids: &[&str],
+    issue_node_ids: &[&str],
     token: Option<&str>,
-) -> Result<std::collections::HashMap<String, Vec<LinkedPr>>> {
-    let mut out = std::collections::HashMap::new();
-    for chunk in node_ids.chunks(50) {
-        let ids = chunk
-            .iter()
-            .map(|id| serde_json::to_string(id).expect("string serializes"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let query = format!(
-            "query {{ nodes(ids: [{ids}]) {{ ... on Issue {{ id \
-             closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {{ nodes {{ ...pr }} }} \
-             timelineItems(first: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {{ nodes {{ \
-               ... on CrossReferencedEvent {{ source {{ ... on PullRequest {{ ...pr }} }} }} \
-               ... on ConnectedEvent {{ subject {{ ... on PullRequest {{ ...pr }} }} }} \
-             }} }} }} }} }} \
-             fragment pr on PullRequest {{ number url author {{ login }} repository {{ nameWithOwner }} }}"
-        );
-
-        let mut cmd = Command::new("gh");
-        cmd.args(["api", "graphql", "-f", &format!("query={query}")]);
-        if let Some(t) = token {
-            cmd.env("GH_TOKEN", t);
-        }
-        let output = cmd
-            .output()
-            .context("failed to run `gh api` — is the gh CLI installed and on PATH?")?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "gh api graphql (linked PRs) failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        let v: Value = serde_json::from_slice(&output.stdout)
-            .context("failed to parse gh api graphql JSON output")?;
-
-        let nodes = v
-            .pointer("/data/nodes")
-            .and_then(|n| n.as_array())
-            .cloned()
-            .unwrap_or_default();
-        for node in &nodes {
-            let Some(id) = node.get("id").and_then(|i| i.as_str()) else {
-                continue;
-            };
-            let closing = node
-                .pointer("/closedByPullRequestsReferences/nodes")
-                .and_then(|n| n.as_array())
-                .into_iter()
-                .flatten()
-                .map(|pr| (pr, true));
-            let referencing = node
-                .pointer("/timelineItems/nodes")
-                .and_then(|n| n.as_array())
-                .into_iter()
-                .flatten()
-                .filter_map(|ev| ev.get("source").or_else(|| ev.get("subject")))
-                .map(|pr| (pr, false));
-
-            let mut prs: Vec<LinkedPr> = Vec::new();
-            for (pr, closing) in closing.chain(referencing) {
-                // Closing PRs come first, so a PR that both closes and
-                // mentions the issue keeps `closing: true`.
-                // Non-PR sources (issues cross-referencing this one) come
-                // back as empty objects.
-                let Some(number) = pr.get("number").and_then(|n| n.as_u64()) else {
-                    continue;
-                };
-                let repo = pr
-                    .pointer("/repository/nameWithOwner")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if prs.iter().any(|p| p.number == number && p.repo == repo) {
-                    continue;
-                }
-                let url = pr
-                    .get("url")
-                    .and_then(|u| u.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let author = pr
-                    .pointer("/author/login")
-                    .and_then(|l| l.as_str())
-                    .unwrap_or("ghost")
-                    .to_string();
-                prs.push(LinkedPr { repo, number, url, author, closing });
+) -> Result<HashMap<String, Vec<LinkedPr>>> {
+    let mut linked_prs_by_issue = HashMap::new();
+    for batch in issue_node_ids.chunks(LINKED_PR_LOOKUP_BATCH_SIZE) {
+        let query_field = format!("query={}", linked_prs_query(batch));
+        let response = gh_api(
+            &["graphql", "-f", &query_field],
+            token,
+            "graphql (linked PRs)",
+        )?;
+        for issue in response["data"]["nodes"].as_array().into_iter().flatten() {
+            if let Some(issue_node_id) = issue["id"].as_str() {
+                linked_prs_by_issue.insert(issue_node_id.to_string(), linked_prs_of_issue(issue));
             }
-            out.insert(id.to_string(), prs);
         }
     }
-    Ok(out)
+    Ok(linked_prs_by_issue)
+}
+
+fn linked_prs_query(issue_node_ids: &[&str]) -> String {
+    let quoted_ids = issue_node_ids
+        .iter()
+        .map(|id| serde_json::to_string(id).expect("a string serializes"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "query {{ nodes(ids: [{quoted_ids}]) {{ ... on Issue {{ id \
+         closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {{ nodes {{ ...pr }} }} \
+         timelineItems(first: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {{ nodes {{ \
+           ... on CrossReferencedEvent {{ source {{ ... on PullRequest {{ ...pr }} }} }} \
+           ... on ConnectedEvent {{ subject {{ ... on PullRequest {{ ...pr }} }} }} \
+         }} }} }} }} }} \
+         fragment pr on PullRequest {{ number url author {{ login }} repository {{ nameWithOwner }} }}"
+    )
+}
+
+/// Closing PRs are listed first, so a PR that both closes and mentions the
+/// issue is kept as closing. Timeline events whose source is an issue rather
+/// than a PR come back as empty objects and are skipped.
+fn linked_prs_of_issue(issue: &Value) -> Vec<LinkedPr> {
+    let closing_prs = issue["closedByPullRequestsReferences"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|pr| (pr, true));
+    let mentioning_prs = issue["timelineItems"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|event| event.get("source").or_else(|| event.get("subject")))
+        .map(|pr| (pr, false));
+
+    let mut linked_prs: Vec<LinkedPr> = Vec::new();
+    for (pr, closes_issue) in closing_prs.chain(mentioning_prs) {
+        let Some(linked_pr) = parse_linked_pr(pr, closes_issue) else {
+            continue;
+        };
+        let already_listed = linked_prs.iter().any(|listed| {
+            listed.number == linked_pr.number
+                && listed.repo_owner_and_name == linked_pr.repo_owner_and_name
+        });
+        if !already_listed {
+            linked_prs.push(linked_pr);
+        }
+    }
+    linked_prs
+}
+
+fn parse_linked_pr(pr: &Value, closes_issue: bool) -> Option<LinkedPr> {
+    let text_at = |pointer: &str| pr.pointer(pointer).and_then(Value::as_str);
+    Some(LinkedPr {
+        number: pr["number"].as_u64()?,
+        repo_owner_and_name: text_at("/repository/nameWithOwner")
+            .unwrap_or("")
+            .to_string(),
+        url: text_at("/url").unwrap_or("").to_string(),
+        author_login: text_at("/author/login")
+            .unwrap_or(DELETED_ACCOUNT_LOGIN)
+            .to_string(),
+        closes_issue,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn pr_json(number: u64, author: &str) -> Value {
+        json!({
+            "number": number,
+            "url": format!("https://github.com/o/r/pull/{number}"),
+            "author": { "login": author },
+            "repository": { "nameWithOwner": "o/r" }
+        })
+    }
+
+    #[test]
+    fn closing_prs_come_first_and_win_over_mentions() {
+        let issue = json!({
+            "id": "I_1",
+            "closedByPullRequestsReferences": { "nodes": [pr_json(2, "closer")] },
+            "timelineItems": { "nodes": [
+                { "source": pr_json(1, "mentioner") },
+                { "source": {} },
+                { "subject": pr_json(2, "closer") }
+            ]}
+        });
+        let linked: Vec<(u64, bool)> = linked_prs_of_issue(&issue)
+            .iter()
+            .map(|pr| (pr.number, pr.closes_issue))
+            .collect();
+        assert_eq!(linked, vec![(2, true), (1, false)]);
+    }
+
+    #[test]
+    fn a_pr_without_author_belongs_to_the_deleted_account() {
+        let pr = json!({ "number": 7, "author": null });
+        assert_eq!(parse_linked_pr(&pr, false).unwrap().author_login, "ghost");
+    }
 }
